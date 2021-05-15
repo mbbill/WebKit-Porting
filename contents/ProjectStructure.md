@@ -190,5 +190,7 @@ drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 cmake
 - cmake，cmake的各种脚本。
 - Platform***.cmake，每个平台特定的cmake文件。
 
+### 各组件的内部构成
 
+因为每个组件内部目录结构层次非常复杂，所以这部分会拆分成多个话题分别讨论。
 
