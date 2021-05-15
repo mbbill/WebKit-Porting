@@ -287,7 +287,11 @@ OFFLINE_ASM_OPCODE_LABEL(op_jneq_ptr)
 - 它不做JIT，不会动态编译出各种不同优化等级的二进制代码。而它的解释器只依赖一套相对精简的bytecode，对内存的压力小很多。
 - 它仍然是一个功能完整，甚至非常先进的JS引擎。
 
+## 参考项目
 
+https://github.com/mbbill/PortableJavaScriptCore
+
+这个项目有点年头了，而且不是非常完整。以后有空我会把它更新到最新的JSC代码。
 
 
 
