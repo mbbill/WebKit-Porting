@@ -130,5 +130,65 @@ WebCore依赖JSC而不是和JSC平起平坐的原因是一个网页的渲染和�
 
 至此我们知道了WebKit和WebKitLegacy这两个组件的关系。目前WebKitLegacy虽然还没被删除，但也不久了。这两个组件处于同级别，分别对应两种不同的使用方式——单进程与多进程。我们的移植工作并不需要两个都做，择一即可。
 
+## WebKit项目的代码结构
+
+了解了以上的组件结构以后我们可以对照着这个结构寻找一下对应的代码。
+
+```
+-rw-r--r-- 1 mbbill 197121   2033 Apr 27 19:20 CMakeLists.txt       // CMake 脚本
+-rw-r--r-- 1 mbbill 197121 279658 Apr 27 19:20 ChangeLog            // 修改记录
+-rw-r--r-- 1 mbbill 197121 794798 Mar 23  2016 ChangeLog-2012-05-22 // 修改记录
+-rw-r--r-- 1 mbbill 197121 782150 Mar 20  2019 ChangeLog-2018-01-01 // 修改记录
+-rw-r--r-- 1 mbbill 197121  75864 Apr 27 19:20 Introduction.md
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:21 JSTests              // JavaScriptCore测试
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:21 LayoutTests          // Layout页面排版测试
+-rw-r--r-- 1 mbbill 197121    607 Apr 27 19:22 Makefile
+-rw-r--r-- 1 mbbill 197121   4511 Apr 27 19:22 Makefile.shared
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:22 ManualTests          // 人工测试
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:22 PerformanceTests     // 性能测试
+-rw-r--r-- 1 mbbill 197121   6172 Apr 27 19:22 ReadMe.md
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:22 Source               // 所有代码
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:22 Tools                // 辅助工具，脚本等
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:22 WebDriverTests       // WebDriver 测试
+drwxr-xr-x 1 mbbill 197121      0 Mar 20  2019 WebKit.xcworkspace
+drwxr-xr-x 1 mbbill 197121      0 Oct  5  2020 WebKitBuild          // 某些平台的编译辅助
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:22 WebKitLibraries      // 某些平台的依赖库
+drwxr-xr-x 1 mbbill 197121      0 Mar 20  2019 Websites             // WebKit.com 页面
+drwxr-xr-x 1 mbbill 197121      0 Apr 27 19:22 resources            // 一些资源
+```
+
+上面我标注了主目录下的各种子目录用途。可以看到大多数都是测试和脚本等。而WebKit项目的核心代码全部在**Source**目录中。
+
+下面我们来看一下Source目录里面的内容
+
+```
+-rw-r--r-- 1 mbbill 197121 1115 Apr 27 19:22 CMakeLists.txt
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 JavaScriptCore
+-rw-r--r-- 1 mbbill 197121 1100 Apr 27 19:22 Makefile
+-rw-r--r-- 1 mbbill 197121   66 Mar 23  2016 Makefile.shared
+-rw-r--r-- 1 mbbill 197121 2283 Apr 27 19:22 PlatformGTK.cmake
+-rw-r--r-- 1 mbbill 197121   43 Mar 23  2016 PlatformMac.cmake
+-rw-r--r-- 1 mbbill 197121 1822 Apr 27 19:22 PlatformWPE.cmake
+-rw-r--r-- 1 mbbill 197121  205 Apr 27 19:22 PlatformWin.cmake
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 ThirdParty
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 WTF
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 WebCore
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 WebDriver
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 WebInspectorUI
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 WebKit
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 WebKitLegacy
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 bmalloc
+drwxr-xr-x 1 mbbill 197121    0 Apr 27 19:22 cmake
+```
+
+这里我们明显可以找到上文提到的各种组件，例如WTF，JavaScriptCore，WebCore，WebKit和WebKitLegacy等等。目录的分布非常清晰工整。剩下的一些目录功能如下：
+
+- ThirdParty，编译WebKit需要的一些第三方库。注意并不是全部第三方库都在这个目录里。WebKit依赖的大多数库都需要平台本身提供。
+- WebDriver，提供WebDriver的实现。
+- WebInspectorUI，WebKit的Inspector本身是一个HTML页面，它所有的代码都在这个目录下。
+- bmalloc，前文提到的一个内存分配库。它根据WebKit的内存使用特征来优化以达到比平台通用malloc更高的性能，同时它还为JSC的JIT编译器提供一些内存安全隔离功能。
+- cmake，cmake的各种脚本。
+- Platform***.cmake，每个平台特定的cmake文件。
+
 
 
