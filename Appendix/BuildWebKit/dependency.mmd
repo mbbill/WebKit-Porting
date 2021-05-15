@@ -1,0 +1,35 @@
+%%```mermaid
+graph TB
+	mn(MiniBrowser)
+	drt(DumpRenderTree)
+	wktr(WebKitTestRunner)
+	wk((WebKit))
+	wkl(WebKitLegacy)
+	jsc((JavaScriptCore))
+	wc((WebCore))
+	wtf(WTF)
+	pal(PAL)
+	angle(ANGLE)
+	bmalloc(bmalloc)
+
+	mn --> wk
+	drt --> wk
+	wktr --> wk
+
+	wk --> wkl
+	wk --> jsc
+	wk --> wc
+
+	wkl --> jsc
+	wkl --> wc
+
+	wc --> jsc
+	wc --> wtf
+	wc --> angle
+	wc --> pal
+
+	jsc --> wtf
+
+	wtf --> bmalloc
+
+%%```

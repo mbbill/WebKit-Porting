@@ -29,28 +29,28 @@
 - 但是无论如何WebKit都始终是一个极其庞大的项目。如果要用来做项目，那么如果没有对它细致地了解，很多事情是搞不定的。这需要时间和耐心，对着代码思考，然后慢慢的上手。希望像其他项目一样拿来改一下编译脚本就能跑是不可能的。后面我会在每一个段落尽量解释所有难点和细节。
 
 
-## [WebKit的项目结构](contents/ProjectStructure.md)
+## [WebKit的项目结构](Contents/ProjectStructure.md)
 
 介绍WebKit整个项目的组成结构，包括目录结构，编译组件的依赖关系等等。
 
-## [WebKit的编译过程](contents/Compilation.md)
+## [WebKit的编译过程](Contents/Compilation.md)
 
 WebKit每一个组件的编译过程都非常复杂。这部分会先大致梳理一遍整个项目的编译过程。具体每个组件的细节会在对应的章节详细介绍。
 
 
-## [WTF移植](contents/WTF.md)
+## [WTF移植](Contents/WTF.md)
 
 WTF是Web Template Framework的缩写。这个库原本是JavaScriptCore的一部分，后面独立出来变成一个公共库，为WebKit提供一些基础组件。
 
-## [JSC移植](contents/JSC.md)
+## [JSC移植](Contents/JSC.md)
 
 JSC是JavaScriptCore的缩写。JSC是WebKit自带的JavaScript引擎。在早年Chrome仍然使用WebKit的时候曾有过两套JavaScript引擎的绑定，一个是JSC，另一个是V8。在Chrome独立出去以后JSC就成为WebKit默认且唯一的JavaScript引擎。
 
-## [WebCore移植](contents/WebCore.md)
+## [WebCore移植](Contents/WebCore.md)
 
 WebCore是WebKit的核心组件。它主要提供的功能是排版（Layout），渲染，多媒体，网络，W3C各种标准的实现，等等。虽然其中有些功能并不完全在WebCore中实现，例如网络和渲染有单独的进程负责，但是WebCore依然是处理绝大多数事情的中心。
 
-## [WebKit的单进程与多进程架构](contents/MultiProcessing.md)
+## [WebKit的单进程与多进程架构](Contents/MultiProcessing.md)
 
 可能很多人都知道Chrome的多进程架构以及因此造成的内存占用问题，很多人不知道的是目前WebKit也是如此。比如在Mac上打开Safari以后查看进程树就会发现诸如`UIProcess` `WebProcess` `NetworkPocess` 这些子进程。
 
@@ -59,19 +59,28 @@ WebCore是WebKit的核心组件。它主要提供的功能是排版（Layout）�
 这一部分会详细介绍WebKit多进程架构的相关内容以及移植要点。
 
 
-## [WebKit的图形与渲染](contents/Graphics.md)
+## [WebKit的图形与渲染](Contents/Graphics.md)
 
 WebKit目前有两套相对独立的渲染路径。一个是以Apple体系下的图形库为主，主要依靠*CoreGraphics*和*CoreAnimation*进行渲染。这个渲染路径涉及到的依赖库主要都是苹果系统上独占的闭源库，所以只能在苹果系统下使用，例如macOS或者iOS。第二个渲染路径基于GTK/Cairo/OpenGL，依靠开源的的图形库从而支持Linux系统下的`WebKitGTK`和`WebKitWPE`。这么看的话我们在移植WebKit的时候只能选择这第二条渲染路径。这个章节会讨论GTK和Cairo的2D绘图以及OpenGL支持下的CSS动画加速。
 
 
-## [WebKit多媒体支持](contents/MultiMedia.md)
+## [WebKit多媒体支持](Contents/MultiMedia.md)
 
 音频和视频部分与图形渲染的情形基本相同——Apple自己有一套基于自身生态系统的移植，同时开源社区维护者一套基于Gstreamer的播放器实现。他们都支持传统的url播放和目前比较流行的以MSE/EME为基础的adaptive streaming。
 
-## [WebKit功能模块裁剪](contents/Features.md)
+## [WebKit功能模块裁剪](Contents/Features.md)
 
 这部分会讨论在嵌入式平台上可以裁剪掉的一些不常用的组件，例如WebRTC等等。
 
-## [Web Inspector](contents/Inspector.md)
+## [Web Inspector](Contents/Inspector.md)
 
 Inspector是WebKit的一个非常重要的组件。WebKit的Inspector支持本地和远程模式。本质上Inspector的UI也是一个网页。在本地模式时Inspector页面和被调试页面归属同一个WebKit UI进程管理，而远程模式下Inspector页面会运行在另一个浏览器上，然后通过IPC和被调试浏览器通信。远程模式类似remote gdb，但是和gdb不同的是WebKit的Inspector在Linux上走D-Bus协议，而在Apple平台走XPC协议。这部分会讨论用*WebSocket*实现Inspector来做到减少依赖以及跨平台。
+
+## 附录
+
+下面是我过去编写的一些相关资料。他们可能有一些过时，然后不全是中文，所以在以后有空的时候我会逐步翻译。
+
+- [WebKit Build Process](Appendix/WebKitBuildProcess.md)
+- [打造一个可移植的JS引擎](Appendix/PortableJSEngine.md)
+- [Ref and RefPtr](Appendix/Ref_RefPtr.md)
+
