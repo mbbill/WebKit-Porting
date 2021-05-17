@@ -143,9 +143,136 @@ JS_EXPORT_PRIVATE JSValue evaluate(ExecState*, const SourceCode&, JSValue thisVa
 
 有兴趣的可以仔细读一下上面这个PDF。简单地说就是生成解释器需要的bytecode时间非常短，而生成高度优化的二进制需要时间。不仅仅是编译的时间，还有获取profile然后针对性优化的时间。同时JIT还会造成非常大的内存消耗。所以对于一些简单的，只执行一两次的代码，花很多时间和内存去做优化编译是得不偿失的。
 
-### Interpreter & JIT
+### 解释器 LLInt
 
-### LLInt
+如果你读完上面的部分，你可能会觉得既然JSC的每一个Tier都可以单独执行，那么我如果能把JSC砍到只剩一个LLInt那不是应该很容易移植吗，因为大多数解释器都不涉及到需要动态申请可执行内存，也不会需要平台相关的汇编，可以看成一个C/C++实现的巨大的`switch-case`。事实上的确是这样的，不过也并不是这么简单，后面我们会详细探讨这个问题。
+
+对嵌入式系统来说很多时候需要在限定的二进制尺寸下完成特定的功能。因为嵌入式设备有各方面的限制，不可能拥有像桌面电脑一样丰富的资源。从这一点来看LLInt似乎非常的合适——它能砍掉非常多的代码，几乎所有JIT相关的都不再需要。它可以节省很多动态内存，因为JIT是吃内存大户。同时它在功能上和高级别的Tier——DFG、FTL JIT几乎没有差别。“**几乎**” 是指像WASM这样必须依赖JIT的功能目前还没办法在JSC中解释执行，但是其他所有我们能想到的JavaScript功能它都是支持。
+
+在深入到LLInt之前，我觉得可以先动手尝试一下JSC，运行一些简单的JavaScript。比如我们可以手动执行一下上面提到的JSC shell (`jsc.cpp`)，打几个命令看看输出。在能够运行JSC以后可以试着用`gdb`启动它，设几个断点然后跟踪一下执行流程。这对于了解代码非常有帮助。
+
+编译和运行JSC shell可以参考WebKit官方的指南，我就不复制粘贴了。`Tools/scripts/run-jsc-stress-tests`是一个非常好的参考，可以看看它是怎么调用JSC来跑测试用例的。比如在这个脚本里面我们会发现JSC Shell支持 `--useLLInt=true`和 `--no-jit`，顾名思义就是关闭JIT然后只使用LLInt。
+
+在看下面内容之前我非常建议先尝试运行和调试一下JSC。
+
+如果试着单步执行的话，可能你会发现当你用gdb挂上了正确的symbol，加载了源代码以后还是会执行到一些看起来像汇编但又不是汇编的东西。像下面这样：
+
+```
+OFFLINE_ASM_OPCODE_LABEL(op_enter)
+    "\tmovq 16(%rbp), %rdx\n"g
+    "\tmovl 24(%rdx), %edx\n"g
+    "\tsubq $4, %rdx\n"g
+    "\tmovq %rbp, %rsi\n"g
+    "\tsubq $32, %rsi\n"g
+    "\ttestl %edx, %edx\n"g
+    "\tjz " LOCAL_LABEL_STRING(_offlineasm_opEnterDone) "\n"
+    "\tmovq $10, %rax\n"g
+    "\tnegl %edx\n"g
+    "\tmovslq %edx, %rdx\n"g
+```
+
+恭喜你已经找到了LLInt的bytecode代码。
+
+#### LLInt目录
+
+我们先打开JavaScriptCore目录下的`llint`子目录。目录里面文件不多，重要的是下面几个：
+
+- LLIntCLoop.cpp // LLInt “CLoop”初始化代码
+- LLIntEntrypoint.cpp // JavaScript进入LLInt的入口
+- LLIntOffsetExtractor.cpp // 地址提取器
+- LLIntSettingsExtractor.cpp // 设置提取器
+- LowLevelInterpreter.asm 以及其他asm文件 // bytecode伪汇编实现
+- LowLevelInterpreter.cpp // LLInt解释器主循环
+
+上面这些东西看起来会比较奇怪，不用着急我们下面都会说到。
+
+#### Bytecode
+
+上面提到过JSC并不直接解释JavaScript，而是先通过parser把JavaScript转换成AST，然后再用Bytecompiler把AST变成bytecode。这些部分并不是LLInt的一部分，因为他们只是执行直接的解析和转换。
+
+我们可以在JavaScriptCore目录下可以找到`parser`和`bytecode`目录分别对应上述功能。现在我们来看一下bytecode到底是什么样子。
+
+向上翻半页，回到我们之前看到过的那一段奇怪的汇编会发现开头的一段看起来似乎不太一样：
+
+```
+OFFLINE_ASM_OPCODE_LABEL(op_enter)
+```
+
+这其实是一个宏，它的展开也很简单——变成一个label。你们可以在`LowLevelInterpreter.cpp`里找到这段宏的定义。
+
+看到这个label是不是忽然想到了什么？解释器大循环和`switch-case`？没错！所有的bytecode最终都会变成这样的汇编，然后被塞到那个超大的`switch-case`循环里面去。
+
+我们再来看这一行，里面还有一个`op_enter`，看起来像字节码。它就是JSC的Opcode(或者bytecode)。不过这里的汇编代码都是生成出来的，你如果在gdb里面追踪这个代码的路径会发现这是个头文件，叫做`LLIntAssembly.h`，并且是在编译生成的某个目录下面，并不是在源代码目录下面。它的生成过程有点复杂，一步步来讲。
+
+首先我们到`bytecode`目录下面找一个叫做`BytecodeList.rb`的文件。打开后发现这个文件中罗列了非常多的opcode**声明**。例如：
+
+```
+op :enter
+
+op :get_scope,
+    args: {
+        dst: VirtualRegister
+    }
+
+op :create_direct_arguments,
+    args: {
+        dst: VirtualRegister,
+    }
+```
+
+我们上面看到的`op_enter`就在这里。它是一个没有参数的opcode。后面的很多opcode在args里面会有不一样数量的参数和定义。所以我们在这儿看到的是opcode的**声明**，也就是所有对于使用者来说需要的信息。而opcode的真正定义在别的地方。为了便于理解，参考下面的图：
+
+```
+JavaScript ---> Parser -> AST -> Bytecompiler -> opcode ---> LLInt
+// 使用者 <---> opcode <---> 执行者
+```
+
+Bytecompiler左边把JavaScript变成opcode，所以它不需要知道每个opcode做什么。
+
+LLInt按顺序执行opcode，所以它需要定义每个opcode的行为。
+
+顺理成章的，我们知道应该去哪里找opcode的定义了——LLInt目录里。
+
+不过在进入LLInt目录之前我们再回来看一下上面这个`BytecodeList.rb`的文件，因为我们还不清楚这个Ruby文件怎么最终会和JSC的其他代码编译到一起去的。如果我们搜索这个文件名，会发现在`JavaScriptCore/CMakeLists.txt`里有这样一行：
+
+```cmake
+add_custom_command(
+    OUTPUT ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/Bytecodes.h ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/InitBytecodes.asm ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/BytecodeStructs.h ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/BytecodeIndices.h
+    MAIN_DEPENDENCY ${JAVASCRIPTCORE_DIR}/generator/main.rb
+    DEPENDS ${GENERATOR} bytecode/BytecodeList.rb
+    COMMAND ${RUBY_EXECUTABLE} ${JAVASCRIPTCORE_DIR}/generator/main.rb --bytecodes_h ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/Bytecodes.h --init_bytecodes_asm ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/InitBytecodes.asm --bytecode_structs_h ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/BytecodeStructs.h --bytecode_indices_h ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/BytecodeIndices.h ${JAVASCRIPTCORE_DIR}/bytecode/BytecodeList.rb
+    VERBATIM)
+```
+
+这里可以看到这个ruby文件会用于生成`Bytecodes.h`。我们打开`Bytecodes.h`会发现它里面用宏的方式定义了每一个opcode。这样一方面可以解耦编译器的前端和后端，另一方面可以很便捷的自动生成大量bytecode相关的代码，而不需要手动一个个的重复添加。
+
+#### Bytecode的实现
+
+上面贴的几个opcode里面有一个是这样的`op :get_scope,`，那我们就搜索一下LLInt目录看看有没有相似的。于是搜索`get_scope`会发现我们找到了竟然不止一个地方：
+
+```asm
+// 在LowLevelInterpreter32_64.asm 中
+
+llintOpWithReturn(op_get_scope, OpGetScope, macro (size, get, dispatch, return)
+    loadi Callee + PayloadOffset[cfr], t0
+    loadp JSCallee::m_scope[t0], t0
+    return (CellTag, t0)
+end)
+```
+
+同时
+
+```asm
+// 在LowLevelInterpreter64.asm 中
+
+llintOpWithReturn(op_get_scope, OpGetScope, macro (size, get, dispatch, return)
+    loadp Callee[cfr], t0
+    loadp JSCallee::m_scope[t0], t0
+    return(t0)
+end)
+```
+
+
 
 ### JIT
 
