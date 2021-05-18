@@ -403,9 +403,87 @@ JSC的解决方法是这样的
 
 这部分的细节其实还有很多，比如存在另一个工具`LLIntSettingsExtractor`来解决`offlineasm`中的设置问题。有兴趣的可以自己深入研究。
 
+#### CLoop
+
+如果你还记得上面提到过的伪汇编“可以方便的编译成平台/编译器相关的汇编，甚至到C语言。”相信你或许会有些疑惑。我们来看下面这一段代码：
+
+```c++
+OFFLINE_ASM_LOCAL_LABEL(_offlineasm_llintOp__commonOp__fn__fn__loadConstantOrVariable__size__k__load__constant)
+    t1 = *CAST<intptr_t*>((cfr.i8p() + 16)); // LowLevelInterpreter64.asm:438
+    t1 = *CAST<intptr_t*>((t1.i8p() + 184)); // LowLevelInterpreter64.asm:439
+    t1 = *CAST<int64_t*>(t1.i8p() + (t0.i() << 3) + intptr_t(-128)); // LowLevelInterpreter64.asm:440
+```
+
+同样是上面贴出来的三行汇编，不过这里的写法似乎有一点不同。
+
+我再把上面的为汇编以及编译后的内联汇编贴出来对比一下：
+
+```assembly
+loadp CodeBlock[cfr], value
+loadp CodeBlock::m_constantRegisters + VectorBufferOffset[value], value
+loadq -(FirstConstantRegisterIndexNarrow * 8)[value, index, 8], value
+```
+
+```c++
+OFFLINE_ASM_LOCAL_LABEL(_offlineasm_llintOpWithReturn__llintOp__commonOp__fn__fn__makeReturn__fn__fn__loadConstantOrVariable__size__k__13_load__constant)
+    "\tmovq 16(%rbp), %rdx\n"                                // LowLevelInterpreter64.asm:438
+    "\tmovq 184(%rdx), %rdx\n"                               // LowLevelInterpreter64.asm:439
+    "\tmovq -128(%rdx, %rsi, 8), %rdx\n"                     // LowLevelInterpreter64.asm:440
+```
+
+看出来了吗？
+
+在CLoop的代码中，`t0`,`t1`,`cfr`这些局部变量对应的是汇编中的寄存器。也就是说CLoop用C/C++语言的功能比如局部变量，整数运算，移位，强制转换这些来模拟了汇编代码的行为。
+
+如果我们打开`llint/LowLevelInterpreter.cpp`会发现下面这段代码：
+
+```c++
+//============================================================================
+// CLoopRegister is the storage for an emulated CPU register.
+// It defines the policy of how ints smaller than intptr_t are packed into the
+// pseudo register, as well as hides endianness differences.
+
+class CLoopRegister {
+public:
+    ALWAYS_INLINE intptr_t i() const { return m_value; };
+    ALWAYS_INLINE uintptr_t u() const { return m_value; }
+    ALWAYS_INLINE int32_t i32() const { return m_value; }
+    ALWAYS_INLINE uint32_t u32() const { return m_value; }
+    ALWAYS_INLINE int8_t i8() const { return m_value; }
+    ALWAYS_INLINE uint8_t u8() const { return m_value; }
+
+    ALWAYS_INLINE intptr_t* ip() const { return bitwise_cast<intptr_t*>(m_value); }
+    ALWAYS_INLINE int8_t* i8p() const { return bitwise_cast<int8_t*>(m_value); }
+    ALWAYS_INLINE void* vp() const { return bitwise_cast<void*>(m_value); }
+    ALWAYS_INLINE const void* cvp() const { return bitwise_cast<const void*>(m_value); }
+...
+```
+
+我们折腾了这么久的汇编，终于又回到C++了，而且这一次通过CLoop似乎我们已经可以做到整个JSC都统一到C++代码上。从可移植性的角度看简直是一个巨大的进步。
+
+但是呢，这里还有一个问题：就是这个神奇的184依然存在：
+
+```c++
+t1 = *CAST<intptr_t*>((t1.i8p() + 184)); // LowLevelInterpreter64.asm:439
+```
+
+也就是说这一段生成的CLoop“汇编”虽然是C语言模拟的，它依然**不能跨平台**，因为很显然换个地方就不是这184了。如果我们能把这行代码变成下面这样才是完美的：
+
+```c++
+t1 = *CAST<intptr_t*>((t1.i8p() + (OFFSETOF_PRIVATE(CodeBlock, m_constantRegisters) + OFFSETOF_PRIVATE(Vector, m_buffer))));
+```
+
+假如我们有一个宏，叫做`OFFSETOF_PRIVATE`，它的功能和`offsetof`类似，且能用在`private`成员上。那么我们得到的这一段新的代码才是真正跨平台的，而且我们甚至都不再需要上面所有`offlineasm`的那些繁琐步骤了。
+
+具体怎样实现可以参考附录[打造一个可移植的JS引擎](../Appendix/PortableJSEngine.md)
+
 ### JIT
 
+#### JIT的等级
+
 ### Runtime
+
+### Profiler
 
 ### Yarr
 
