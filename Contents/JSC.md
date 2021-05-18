@@ -272,7 +272,136 @@ llintOpWithReturn(op_get_scope, OpGetScope, macro (size, get, dispatch, return)
 end)
 ```
 
+两个地方的实现看起来相似，却又不太一样。如果我们列出LLInt目录下面的所有`asm`文件，会发现一共有三个：
 
+- LowLevelInterpreter.asm
+- LowLevelInterpreter32_64.asm
+- LowLevelInterpreter64.asm
+
+这里的`32_64`和`64`与一个非常重要的宏有关：`JSVALUE32_64`
+
+根据ECMA-262规范，JavaScript中的数字必须至少是IEEE754格式双精度浮点。对应的C/C++浮点数类型就是`double`。在JSC中JSValue不仅会编码`double`数值，还会同时包含指针以及整数的payload。在64位系统上`double`和指针都是64位的，同时我们也可以用64位整数运算来得到最大性能，这些都可以很方便的扔进一个寄存器中。但是在32位系统上事情就变得复杂起来。在32位系统中寄存器是32位的，指针也是32位的，double依然是64。为了解决这些问题，JSC定义了三种不同的JSValue格式：
+
+- JSValue32，32位JSValue，适配32位系统，在目前代码中已被删除。
+- JSValue32_64，64位JSValue，适配32位系统。
+- JSValue64，64位JSValue，适配64位系统。
+
+上面三个`asm`文件就是对应的目前剩余的两种JSValue配置。而`LowLevelInterpreter.asm`则包含大多数不受影响的代码。
+
+我们再回头看一下上面两段代码的区别：
+
+`loadi Callee + PayloadOffset[cfr], t0    //LowLevelInterpreter32_64.asm` 
+
+`loadp Callee[cfr], t0                    // LowLevelInterpreter64.asm`
+
+32位的实现增加了一个`PayloadOffset`的寻址，而这个`PayloadOffset`恰恰就定义在`JavaScriptCore/runtime/JSCJSValue.h`中。
+
+有兴趣的可以继续研究一下这个重要的头文件。
+
+#### 伪汇编到真汇编的转换
+
+我们上面看到的这几个文件都是所谓的LLInt伪汇编。它的主要目的是：
+
+1. 平台无关
+2. 可以方便的编译成平台/编译器相关的汇编，甚至到C语言。
+
+既然要做转换，那么肯定会有一个工具来完成这个对应不同平台的转换的任务，这就是`offlineasm`的目标。在JavaScriptCore目录下面你可以找到这个子目录，里面都是Ruby语言编写的脚本。这些脚本在编译JSC的过程中会被CMake调用，然后生成`LLIntAssembly.h`。`LLIntAssembly.h`头文件里都是转换后的内联汇编，在被`LowLevelInterpreter.cpp`的`switch-case`大循环包含以后与其他C++代码编译到一起。
+
+如果我们去检查生成以后的内联汇编会看到它的注释会指明从哪里编译而来：
+
+```c++
+  OFFLINE_ASM_LOCAL_LABEL(_offlineasm_llintOpWithReturn__llintOp__commonOp__fn__fn__makeReturn__fn__fn__loadConstantOrVariable__size__k__13_load__constant)
+    "\tmovq 16(%rbp), %rdx\n"                                // LowLevelInterpreter64.asm:438
+    "\tmovq 184(%rdx), %rdx\n"                               // LowLevelInterpreter64.asm:439
+    "\tmovq -128(%rdx, %rsi, 8), %rdx\n"                     // LowLevelInterpreter64.asm:440
+```
+
+这三行分别指向了`LowLevelInterpreter64.asm`的438到440行，如下：
+
+```assembly
+loadp CodeBlock[cfr], value
+loadp CodeBlock::m_constantRegisters + VectorBufferOffset[value], value
+loadq -(FirstConstantRegisterIndexNarrow * 8)[value, index, 8], value
+```
+
+#### 汇编当中的偏移量
+
+ 如果我们回想一下最初的目标，移植JSC，那么我们现在到了哪一步呢？似乎越走越远，而且越来越复杂。即使我们砍掉了JIT只留下解释器，我们依然碰到了复杂的汇编以及各种平台相关的问题。
+
+如果我们移植一个只有C代码的项目，可能会比较轻松。如果当中嵌着一些汇编，事情会变得麻烦一些。如果这些汇编又是动态生成的，并且通过各种复杂脚本经过很多奇怪的步骤最终得到一个看起来不知道在干什么的东西，这时候如果遇到问题的话调试会变得极其棘手。因为定位错误会变得非常困难。我们拿上面那一段生成的汇编举个例子：
+
+考虑这一行，
+
+```assembly
+"\tmovq 184(%rdx), %rdx\n"    // LowLevelInterpreter64.asm:439
+```
+
+这里的184是哪里来的呢？
+
+我们知道的是根据后面的注释，它指向`LowLevelInterpreter64.asm:439`行，也就是
+
+````assembly
+loadp CodeBlock::m_constantRegisters + VectorBufferOffset[value], value
+````
+
+我先来解释一下汇编：
+
+- `loadp`，加载一个指针大小的数到目的寄存器，对应的汇编指令是`movq`
+- `loadp`的第一个操作数`CodeBlock::m_constantRegisters + VectorBufferOffset[value]`。意为以value为基地址找到偏移量为`CodeBlock::m_constantRegisters + VectorBufferOffset`的位置。注意这里`VectorBufferOffset` 在`LowLevelInterpreter.asm`中的定义是 `const VectorBufferOffset = Vector::m_buffer`。
+- 所以上面这一条伪汇编实质上对应的C++代码就是 `value = *(((*CodeBlock)value)->m_constantRegisters->m_buffer)`.
+
+注意这里为汇编和生成的内联汇编都是AT&T syntax，source before destination.
+
+所以这一行汇编其实就是**通过偏移量**去一个C++的类里面拿了一个数放到了寄存器里。注意我们拿的这个数是`m_buffer`，它是一个指针，指向vector真正存储内容的地方。因为vector的内容是在heap中分配的，我们显然是不可能通过偏移量直接拿到vector内部的数的。用语言描述这段代码就是：拿到value指针，它的类型是`CodeBlock`，我们根据`CodeBlock`中成员变量`m_constantRegisters`的偏移加上`Vector`中数据指针的偏移`m_buffer`找到`m_buffer`相对`CodeBlock`的累计偏移，取到这个指针，然后放到value中去。
+
+偏移量的累加很容易理解：
+
+```c++
+struct A {
+    int x;
+    int y;
+};
+struct B {
+    int z;
+    A a;
+};
+struct B b;
+// b.a.y 等同于 &b + (offsetof(B.a) + offsetof(A.y))
+```
+
+从上面编译结果来看这个偏移量是**184**，所以很显然`m_constantRegisters`和`m_buffer`各自偏移量相加应该是184，但是我们目前还不知道它是怎么被`offlineasm`这个工具算出来的。
+
+不过可能有些人已经开始隐隐约约感觉到一些问题，因为184这个数是非常有可能变化的，因为一个成员变量在对象内部的偏移量很有可能受到各种条件的影响，包括：
+
+- 编译器优化导致的struct layout变化。
+- 对齐设置。
+- 如果对象中包含标准库中的对象，那么这些对象尺寸变化也会有影响。
+- 如果对象中包含条件编译的部分，在条件满足或者不满足的时候对象尺寸和对其会变化。
+- 等等
+
+所以在我们写C/C++的时候是绝对不可能用一个184来代替`offsetof`的，太危险。但是汇编里面我们没有办法这样做，所以只能在编译的时候动态的生成这个数值。
+
+那么问题来了，如果是你的话，你会怎样写`offlineasm`这个工具来转换出184这个数？不要急着往下看，可以先思考一下。
+
+#### 从对象中提取偏移量
+
+可能你已经想到了，如果需要一个非常可靠的方法来提取偏移量，唯一可行的办法就是在最终生成的二进制文件中输出这个偏移。比如上面我们的`struct A`和`struct B`的例子里面，我们可以在别的地方直接把他们内部成员的地址打印出来。但是在这里我们需要的是一个内联汇编，它本身就是用来编译我们最终需要的二进制的一部分，所以这就变成鸡和蛋的问题了——我们需要一个二进制文件来输出偏移量，同时我们需要这个偏移量来编译这个二进制。
+
+这里其实还有一个问题。假设我们现在用的是交叉编译器，比如从X86_64架构的Linux上面交叉编译树莓派上的armv7a版本。这时候我们是没办法直接在Linux host上面运行目标程序的，也就是说“输出偏移”这一步我们需要换一个方法，而不能直接依靠目标平台的可执行文件来给我们打印。毕竟在编译过程中出现这种需要在目标平台执行程序的步骤就太过麻烦了。更何况有些目标平台未必可以做到控制台输出，或者出现硬件还没做好等等情况。
+
+#### LLIntOffsetExtractor
+
+JSC的解决方法是这样的
+
+1. `offlineasm`工具会处理一遍所有伪汇编asm文件，汇整出asm文件当中所有访问到的偏移量，并且整理成一张表。
+   1. 实际操作中这张表里不仅仅是偏移(offset)，还会有常量定义(constexpr)和对象大小(sizeof)
+2. `offlineasm`会用这张表生成`LLIntDesiredOffsets.h`头文件。
+3. JSC会将`LLIntOffsetsExtractor.cpp`编译成目标平台的可执行文件，注意这里会使用完全相同的编译器与编译开关以保证这个二进制文件和编译JSC最终得到的二进制具有相同的layout。
+4. `offlineasm`**不会**尝试去执行上面这个可执行文件，因为它是目标平台的二进制。而是会读取这个文件内容，找到上面那张表里面每一项对应的数值。
+
+步骤4可能看起来比较困难，因为我们并没有办法知道目标平台二进制到底是什么格式的，毕竟交叉编译器和操作系统的种类不计其数。所以这里JSC使用了一个手段，就是将这些静态数据用magic number包围起来，然后`offlineasm`只会将目标可执行文件当作二进制数据读取，找到其中的magic number，就可以把中间包含的数据拿出来了。除了大小端导致的magic number顺序问题以外这种方法相对来说是比较可靠的。具体细节可以参考`offlineasm/asm.rb`和`offlineasm/offsets.rb`。
+
+这部分的细节其实还有很多，比如存在另一个工具`LLIntSettingsExtractor`来解决`offlineasm`中的设置问题。有兴趣的可以自己深入研究。
 
 ### JIT
 
