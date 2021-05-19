@@ -479,11 +479,132 @@ t1 = *CAST<intptr_t*>((t1.i8p() + (OFFSETOF_PRIVATE(CodeBlock, m_constantRegiste
 
 ### JIT
 
-#### JIT的等级
+JSC中的JIT(Just In Time compiler)在近十年经历过非常大的改进。目前主要包括：
+
+- DFG(Data Flow Graph)，中等性能，低延迟。
+- FTL(Faster Than Light)，高性能，高延迟。
+
+FTL在2014年之前使用的是LLVM后端，14年以后改为了B3(Bare Bones Backend)。后又陆续加入了很多其他的优化以及wasm支持。
+
+因为这些JIT最终都会在运行的时候实时编译可执行代码，所以这样也会带来一些限制：
+
+- 目标平台需要支持可执行内存分配。有些平台因为安全原因这种API是不开放的，这时候所有JIT都没有办法运行。
+- 目标平台的处理器必须在JSC的assembler支持范围内。目前assembler支持的架构包括：
+  - ARMv7
+  - ARM64
+  - X86
+  - X86_64
+  - MIPS
+
+在JSC中添加一个新的CPU汇编器工作量是巨大的，所以如果目标CPU不在上述列表中，那么也就意味着只能依靠解释器了。
 
 ### Runtime
 
-### Profiler
+众所周知JavaScript是一个需要runtime的语言。这个runtime提供了很多JavaScript语言的规定的，却无法用JavaScript本身实现的功能。比如获取系统时间，垃圾收集，异常处理等等。在JSC中Runtime的大多数功能都在`runtime`这个目录下实现了。
+
+例如在JavaScript global namespace下面能访问到的大多数对象都在`runtime`目录下以`JS`开头的文件中定义。例如
+
+- JSFunction
+- JSObject
+- JSPromise
+
+等等。
+
+不过这里也有一些例外，比如`window`常常被认为是JavaScript的一个全局对象，但实际上它是DOM注入到JavaScript引擎全局环境里去的。它是DOM在JavaScript中的API入口，而不是JavaScript语言本身的一部分。后面章节谈到WebCore和IDL的时候会继续深入这个话题。
+
+#### JIT Profiler & Sampling Profiler
+
+`Profiler`是JSC的JIT需要的一个比较关键的功能。我们知道JIT的内存开销是比较大的，同时JIT的编译过程，尤其是FTL JIT编译是比较慢的。而热点代码往往只占所有代码的一小部分。如果可以知道那些代码比较“热”，那么编译这些热点很显然会事半功倍。注意这里的Profiler是用来优化JIT的，而不是另一个给inspector用的`sampling profiler`。
+
+关于`sampling profiler`可以参考 https://webkit.org/blog/6539/introducing-jscs-new-sampling-profiler/
+
+`sampling profiler`和JIT没有关系，它的作用是每隔一段时间提取一次当前堆栈，然后汇总信息发送给inspector，这样在inspector的timeline view里面就可以直观的看到那些代码被执行较多次数。这个功能是`runtime`的一部分，因此也就在`runtime`目录下面。
 
 ### Yarr
+
+yarr是个正则表达式引擎，它本身也包含一个正则表达式JIT，可以即时编译正则表达式来提供最大性能。代码在`yarr`目录下面。
+
+## 移植
+
+到目前我们基本上已经了解了很多JSC和移植有关的基本知识。下面我们把这些汇总起来，做一个最简单的移植计划。
+
+### 解释器和JIT
+
+对于LLInt和JIT的处理，我们可以先从LLInt入手，暂时关闭所有JIT功能。这样在第一步完成以后我们至少可以有一个能够正常运行解释器的JSC。后续再添加JIT以后出现问题调试起来不那么棘手。
+
+JSC提供很多宏开关可以让我们比较方便的做到这一点：
+
+- `ENABLE_JIT=0`
+- `ENABLE_DFG_JIT=0`
+- `ENABLE_FTL_JIT=0`
+- `ENABLE_B3_JIT=0`
+
+### LLInt的工作模式
+
+对于LLInt我们有两种选择：
+
+- 在JSC支持的CPU上可以将伪汇编代码编译为平台相关的汇编，获得100%解释器性能。
+- 使用CLoop获得最大的兼容性，同时牺牲大约30%左右的解释器性能。
+
+30%是我自己在多年前测试得到的结果，可能现在会很不一样。因为CLoop非常依赖C/C++编译器的优化能力，所以这些年编译器也在越来越聪明，可能差距会更小。
+
+如果选择平台汇编，我们需要设置的宏：
+
+- `ENABLE_C_LOOP=0`
+- `ENABLE_ASSEMBLER=1`
+
+如果选择CLoop，则
+
+- `ENABLE_C_LOOP=1`
+- `ENABLE_ASSEMBLER=0`
+
+注意即使我们关闭了所有的JIT，LLInt依然对assembler是有依赖的，除非使用CLoop。而assembler目前只支持上一个章节中列举的5种CPU架构，所以如果想要移植JSC到一个不在列表中的CPU上，LLInt+CLoop是唯一的选择。
+
+### CPU相关
+
+如果我们选用LLInt+平台汇编，那么我们需要定义一些CPU相关的宏，例如:
+
+- armv7
+  - `WTF_CPU_ARM=1`
+  - `WTF_CPU_ARM_VFP_V2=1`
+  - `WTF_CPU_NEEDS_ALIGNED_ACCESS=1`
+    - 可选
+      - `WTF_CPU_ARM_NEON=1`
+      - `WTF_CPU_ARM_VFP_V3_D32=1`
+      - `WTF_CPU_ARM_THUMB2=1`
+- arm64
+  - `WTF_CPU_ARM64=1`
+- x64
+  - `WTF_CPU_X86_64=1`
+- mips
+  - `WTF_CPU_MIPS=1`
+
+### WebAssembly
+
+JSC的WebAssembly实现依赖JIT。既然我们暂时已经关闭了JIT，那么也需要:
+
+`ENABLE_WEBASSEMBLY=0`
+
+### 多线程的处理
+
+JSC中有不少线程。除了JIT需要的那些以外还有几个比较重要的就是：
+
+- Concurrent GC，执行并行mark-sweep垃圾回收的线程。
+- Sampling profiler，定时采样JSC执行堆栈的线程。
+- Inspector，支持inspector的线程。
+
+这里面Concurrent GC 和Sampling profiler都需要可以暂停线程的能力。例如Sampling profiler在Linux上是通过给主线程发signal的方式将JavaScript当前执行暂停，然后进行堆栈采样和记录，最后再让主线程继续的方式来收集信息的。在不同的平台上这种暂停和继续线程的功能需要手动移植和实现。
+
+### Allocator
+
+JSC对堆内存也有一些要求，例如它需要能能够按页分配，并且需要可以做到Reserve and commit.
+
+Reserve是对一个地址和一定长度的虚拟内存提出保留，但不一定会立刻占用。
+
+Commit是在真正需要使用某一段内存的时候做“提交”，所以会真实占用系统内存。
+
+很多嵌入式系统并不提供reserve&commit的能力。但是如果使用malloc来替代的话会造成比较大的浪费。在移植JSC的时候这也是需要考虑的一点。
+
+
+
 
