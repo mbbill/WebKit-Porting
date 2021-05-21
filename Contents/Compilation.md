@@ -83,11 +83,162 @@ struct a {
 
 ## Forwarding Headers
 
-## export macros
+不同的C/C++项目对于暴露在外的API头文件有不同的处理方式。在WebKit项目中重要分为两种：
 
+- WTF暴露根目录
+- 其他例如JSC，WebCore等组件使用Forwarding headers。
 
+WTF因为它本身是一个模板库，它内部的头文件比cpp代码还多。而且WTF是一大堆互相之间没有太多关系的零散功能放在一起，并不像JSC或者WebCore那样是一个具有完整功能的整体。再加上整个WTF代码规模非常的小，所以在这种特殊情况下上面提到的那些坏处就小很多，而暴露根目录会让使用变得更加便捷。
 
+从这里也可以看到规则并不是绝对的，很多时候都是权衡利弊下的折中选择。WebKit这个项目中充满了各种类似的折中，比如使用C++STL对象还是WTF对象，组件内部是保持严格的层级还是偶尔允许反向依赖的例外等等。
 
+相对于WTF来说JSC和WebCore就必须提供单独的头文件了。这部分头文件就叫做"Forwarding Headers"。它有下面几个特殊性：
+
+- 它总是在编译时期动态产生的。绝大多数头文件是从源代码目录中复制出来，少部分文件是使用某些辅助工具生成的。
+- 这些文件总是在编译目录中，作为编译**结果**的一部分。所谓“结果”是指：
+  - 这些头文件需要提供给上层依赖它的组件使用，而不是编译它本身使用的。例如编译过程中同样会生成大量`.o`文件，它是编译器的输出同时又是链接器的输入，但是它对外部组件是没用的。而Forwarding Header不是内部编译过程中任何一步的依赖，而是最终结果。
+  - 这部分头文件实质上就是这个组件的API。它的重要性等同于同时产生的动态或者静态链接库。在有些时候头文件会和二进制一起分发。我们这里最终需求是编译一个WebKit浏览器使用，所以对于我们来说它没什么用，但是例如macOS或者iOS上我们都是可以直接动态调用JSC和WebCore的。
+- WebKit项目中的Forwarding Headers都会被放到一个和组件同名的目录下面。
+  - 例如JSC的所有Forwarding Headers都可以这样使用：
+    - `#include <JavaScriptCore/Something.h>`
+  - 或者WebCore提供的头文件可以这样：
+    - `#include <WebCore/Something.h>`
+  - 更上层的WebKit组件也是同理。
+
+这种安排不是完美的，一些缺陷例如：
+
+- 调试的时候进入的头文件往往不是那个原始版本的，而是复制出来的头文件。有时候会有一些奇怪结果。比如同样是JSC中的`Exception.h`，在JSC内部使用的时候我们找到的是那个`runtime`下的`Exception.h`。而当我们从WebCore出发，很有可能找到的是那个复制出来的Forwarding Headers，也就是那个`JavaScriptCore/Exception.h`。在调试的时候往往会造成一些困惑，而对Forwarding Headers的修改也会随着下一次编译而丢失。
+- 不同目录下的文件不可以重名。这是因为从不同目录下面复制的头文件最终都会归到同一个目录中。
+
+## Export Macros
+
+谈到Export macros一定是和Linkage有关的。如果是动态链接，那么一个动态库需要把所有对外提供的函数都标记起来，同时在动态库(比如`.so`)文件中保留导出函数表，这样上层的库或者可执行文件才可以根据它来动态加载代码。感兴趣的可以看一下Linkers and Loaders这本书。
+
+MSVC链接器通常会把所有函数标记成内部，除非：
+
+- 这些函数被声明成`__declspec(dllexport)`。
+- 或者使用`def`文件把symbol(符号)提供给链接器。
+
+其他编译器，例如Linux上的gcc和clang刚好相反，他们默认都会导出所有函数。
+
+- 默认所有函数都是`visibility("default")`
+- 除非我们给编译器提供`-fvisibility=hidden`来强制改变上面这一条行为。
+
+gcc和clang这么做是因为一些历史原因，但是其实这样是容易破坏API的隐藏内部实现的能力的。所以我们希望的是msvc这样的特性——默认情况下所有符号都对外部不可见，除非特定标记过。
+
+所以统一起见：
+
+- 对gcc/clang我们使用`-fvisibility=hidden`默认隐藏所有函数。对msvc不做改变。
+- 对gcc/clang我们使用`__attribute__((visibility("default")))`来标记导出函数。同样对msvc我们使用`__declspec(dllexport)`
+
+这里有个特殊的地方就是msvc要求在上层组件中使用这些`dllexport`函数时加上`__declspec(dllimport)`，而gcc/clang不需要。因为msvc上对于动态链接的函数都会修改他们的symbol，变成类似于`__impl_xxxx`的调用，和gcc/clang链接器的做法有所区别。
+
+看到这里可能会觉得一个导出函数怎么会这么复杂，所以我们看一个例子来帮助理解一下。
+
+```c++
+// a.h
+void Foo();
+```
+
+我们有个库a，提供一个函数`Foo`给外部。这时候我们按照上文中的要求给他定义成这样：
+
+```c++
+// a.h
+#ifdef _MSC_VER
+__declspec(dllexport) void Foo();
+#else
+__attribute__((visibility("default"))) void Foo();
+#endif
+```
+
+同时别忘了给gcc/clang链接器加上`-fvisibility=hidden`。
+
+但是这样并没有达到要求，因为在别的库使用`a.h`的时候上面的定义应该由“导出”变成“导入”。所以我们改一下，变成下面这样：
+
+```c++
+// a.h
+#ifdef BUILDING_LIB_A // Make sure BUILDING_LIB_A is defined only during building lib a
+    #ifdef _MSC_VER
+    __declspec(dllexport) void Foo();
+    #else
+    __attribute__((visibility("default"))) void Foo();
+    #endif
+#else
+    #ifdef _MSC_VER
+    __declspec(dllimport) void Foo();
+    #else
+    void Foo();
+    #endif
+#endif
+```
+
+我们定义一个`BUILDING_LIB_A`，同时我们在编译a的时候给编译器加一个定义`-DBUILDING_LIB_A`。这个头文件目前就可以在a的内部以及所有依赖它的项目中正确编译链接了。但是每个函数这么写就非常的麻烦。不如我们定义成下面这样：
+
+```c++
+// a_helper.h
+#ifdef BUILDING_LIB_A // Make sure BUILDING_LIB_A is defined only during building lib a
+    #ifdef _MSC_VER
+    	#define EXPORT __declspec(dllexport)
+    #else
+    	#define EXPORT __attribute__((visibility("default")))
+    #endif
+#else
+    #ifdef _MSC_VER
+    	#define EXPORT __declspec(dllimport)
+    #else
+    	#define EXPORT
+    #endif
+#endif
+```
+
+```c++
+// a.h
+#include "a_helper.h"
+EXPORT void Foo();
+```
+
+至此我们顺利的完成了上面所有的目标，而WebKit就是这么做的。
+
+在WebKit的不同组件中我们可以找到类似的宏：
+
+- `JS_EXPORTDATA`
+- `JS_EXPORT_PRIVATE`
+- `WEBCORE_EXPORT`
+- `WEBCORE_TESTSUPPORT_EXPORT`
+- `PAL_EXPORT`
+- `PAL_TESTSUPPORT_EXPORT`
+
+等等类似还有很多。
+
+### API的稳定性
+
+如果把头文件看成是项目之间的contract(合同)的话，那么里面定义的东西包括函数变量声明等等就是条款。一般来说项目开始以后我们肯定是不希望一直修改这个条款的，不然很容易导致各种混乱和返工。但同时我们也不可能保证刚开始就把所有细节全部在头文件里面定好。这时候Export macros就发挥作用了。
+
+回到我们之前提到过的`runtime/Exception.h`。这个文件是JSC的内部头文件，同时也是对外API的一部分，因为它会被复制到Forwarding Headers去。它里面的定义类似这样：
+
+```c++
+class Exception final : public JSCell {
+public:
+    using Base = JSCell;
+    static const unsigned StructureFlags = Base::StructureFlags | StructureIsImmortal;
+    static const bool needsDestruction = true;
+
+    enum StackCaptureAction {
+        CaptureStack,
+        DoNotCaptureStack
+    };
+    JS_EXPORT_PRIVATE static Exception* create(VM&, JSValue thrownValue, StackCaptureAction = CaptureStack);
+
+    static Structure* createStructure(VM&, JSGlobalObject*, JSValue prototype);
+
+    static void visitChildren(JSCell*, SlotVisitor&);
+    
+...
+```
+
+在这一堆代码中间我们看到了`JS_EXPORT_PRIVATE`，它导出了一个`static`的`create`函数。所以这个对象在外部唯一可以使用的接口就是这个`create`函数。虽然整个类都定义在了头文件里面，而且被外部可见，但我们依然可以比较放心的修改这个类的实现，而不用担心破坏API的完整性。
+
+对于依赖他的组件来说，如果使用了其他函数则会遇到链接错误。例如`visitChildren`，由于我们给编译器添加了默认`-fvisibility=hidden`，且`visitChildren`没有`JS_EXPORT_PRIVATE`声明，那么这个函数就不会出现在`JavaScriptCore.so`的导出列表中(确切的说是会被标记为Hidden)，那么其他库也就无法访问这个函数。
 
 ## WTF
 ## JSC
