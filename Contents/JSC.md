@@ -512,6 +512,60 @@ FTL在2014年之前使用的是LLVM后端，14年以后改为了B3(Bare Bones Ba
 
 不过这里也有一些例外，比如`window`常常被认为是JavaScript的一个全局对象，但实际上它是DOM注入到JavaScript引擎全局环境里去的。它是DOM在JavaScript中的API入口，而不是JavaScript语言本身的一部分。后面章节谈到WebCore和IDL的时候会继续深入这个话题。
 
+#### `*.lut.h`的生成
+
+我们知道JavaScript的runtime中包含着很多内置对象，每个对象都有各种函数或者成员变量。这些内置对象其实本质上都是一个个的hash table。实际上所有JavaScript的object都是hash table，里面存的是key-value pair的成员。
+
+我们同时又知道这些内置的对象一般是不变的，那么对于这些“不变”的hash table最好的办法就是使用静态hash。
+
+在CMakeLists.txt中有这样一行：
+
+```cmake
+foreach (_file ${JavaScriptCore_OBJECT_LUT_SOURCES})
+    get_filename_component(_name ${_file} NAME_WE)
+    GENERATE_HASH_LUT(${CMAKE_CURRENT_SOURCE_DIR}/${_file} ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/${_name}.lut.h)
+endforeach ()
+```
+
+它调用了同级别目录下面的`create_hash_table`脚本来生成这些`.lut.h`头文件。
+
+如果仔细观察的话会发现这些`.lut.h`大多数要么是`constructor`，要么是`prototype`。这其实是对应的JavaScript中的动态和静态成员函数。
+
+在JavaScript中我们知道每个可以new出来的对象都有一个`constructor`和一个`prototype`。`constructor`本质上是一个`Function`对象.我们可以对它使用`new`，所以它是一个构造函数。那么放在这个构造函数里面的成员就是*静态成员*。比如我们不仅可以：
+
+```javascript
+new Date();
+```
+
+还可以直接使用这个`constructor`的静态成员：
+
+```javascript
+Date.now();
+// 或者
+Date.parse('01 Jan 1970 00:00:00 GMT');
+```
+
+本质上`Date.now()`和其他类对象的函数是不在一个对象里的。比如
+
+```javascript
+new Date().getDate();
+```
+
+我们实际调用的是
+
+```javascript
+Date.prototype.getDate();
+```
+
+所以对于每一个runtime对象来说，我们需要两个类来支持他们：
+
+- `prototype object` - 存放所有对象成员函数。
+- `constructor object` - 存放所有静态函数。
+
+也就是为什么我们能看到生成的lut文件里面有`DateConstructor.lut.h`和`DatePrototype.lut.h`
+
+附录里有一个我画的JavaScript对象关系图以帮助理解，这里涉及到的其他JavaScript细节就不展开了。
+
 #### JIT Profiler & Sampling Profiler
 
 `Profiler`是JSC的JIT需要的一个比较关键的功能。我们知道JIT的内存开销是比较大的，同时JIT的编译过程，尤其是FTL JIT编译是比较慢的。而热点代码往往只占所有代码的一小部分。如果可以知道那些代码比较“热”，那么编译这些热点很显然会事半功倍。注意这里的Profiler是用来优化JIT的，而不是另一个给inspector用的`sampling profiler`。
@@ -605,6 +659,8 @@ Commit是在真正需要使用某一段内存的时候做“提交”，所以�
 
 很多嵌入式系统并不提供reserve&commit的能力。但是如果使用malloc来替代的话会造成比较大的浪费。在移植JSC的时候这也是需要考虑的一点。
 
+## 附录
 
+### JavaScript对象关系图
 
-
+![image-20210521183809398](JSC.assets/image-20210521183809398.png)

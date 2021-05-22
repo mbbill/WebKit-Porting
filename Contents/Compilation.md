@@ -281,78 +281,24 @@ WTF的编译过程不复杂。在`WTF/wtf`目录下面可以找到他的`CMakeLi
 
 ## JSC
 
-JSC的编译过程就相对来说复杂很多。这里可以对照着[JavaScriptCore移植](Contents/JSC.md)的“背景知识”章节阅读。
+JSC的编译过程就相对来说复杂很多。这里可以对照着[JavaScriptCore移植](JSC.md)的“背景知识”章节阅读。
 
 打开`JavaScriptCore/CMakeLists.txt`能看到这个文件有一千多行。我们不可能把所有内容都过一遍，所以挑一些比较重要的来说：
 
-### `*.lut.h`的生成
+- 生成`.lut.h` - 生成所有`runtime`内置对象的静态hash。
+- 生成`Bytecodes.h` - 生成LLInt字节码。生成器的代码在`bytecode/BytecodeList.rb`。
+- 生成`LLIntDesiredSettings.h`和`LLIntDesiredOffsets.h` - 为提取LLInt assembly offset做准备。
+- 编译`LLIntOffsetsExtractor`，然后编译`LowLevelInterpreter{64/32_64}.asm`。
+- 生成Yarr和Yarr JIT所需文件。
+- 编译built-in的JS文件。这些JavaScript源代码会被编译到JSC内部。代码位置在`JavaScriptCore/builtins`目录下。
+- 生成inspector所需文件。
+- 编译JSC所有源代码以及复制Forwarding Headers。
 
-我们知道JavaScript的runtime中包含着很多内置对象，每个对象都有各种函数或者成员变量。这些内置对象其实本质上都是一个个的hash table。实际上所有JavaScript的object都是hash table，里面存的是key-value pair的成员。
-
-我们同时又知道这些内置的对象一般是不变的，那么对于这些“不变”的hash table最好的办法就是使用静态hash。
-
-在CMakeLists.txt中有这样一行：
-
-```cmake
-foreach (_file ${JavaScriptCore_OBJECT_LUT_SOURCES})
-    get_filename_component(_name ${_file} NAME_WE)
-    GENERATE_HASH_LUT(${CMAKE_CURRENT_SOURCE_DIR}/${_file} ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/${_name}.lut.h)
-endforeach ()
-```
-
-它调用了同级别目录下面的`create_hash_table`脚本来生成这些`.lut.h`头文件。
-
-如果仔细观察的话会发现这些`.lut.h`大多数要么是`constructor`，要么是`prototype`。这其实是对应的JavaScript中的动态和静态成员函数。
-
-在JavaScript中我们知道每个可以new出来的对象都有一个`constructor`和一个`prototype`。`constructor`本质上是一个`Function`对象.我们可以对它使用`new`，所以它是一个构造函数。那么放在这个构造函数里面的成员就是*静态成员*。比如我们不仅可以：
-
-```javascript
-new Date();
-```
-
-还可以直接使用这个`constructor`的静态成员：
-
-```javascript
-Date.now();
-// 或者
-Date.parse('01 Jan 1970 00:00:00 GMT');
-```
-
-本质上`Date.now()`和其他类对象的函数是不在一个对象里的。比如
-
-```javascript
-new Date().getDate();
-```
-
-我们实际调用的是
-
-```javascript
- Date.prototype.getDate();
-```
-
-所以对于每一个runtime对象来说，我们需要两个类来支持他们：
-
-- `prototype object` - 存放所有对象成员函数。
-- `constructor object` - 存放所有静态函数。
-
-也就是为什么我们能看到生成的lut文件里面有`DateConstructor.lut.h`和`DatePrototype.lut.h`
-
-附录里有一个我画的JavaScript对象关系图以帮助理解，这里涉及到的其他JavaScript细节就不展开了。
-
-### LLInt
-#### LLLIntDesiredSettings.h
-#### LLIntDesiredOffsets.h
-#### Assembly
-### LUT
-### WASM
-### Inspector
-### Builtins
 ## WebCore
-### IDL Bindings
-## WebKit & WebKitLegacy
 
-## 附录
+WebCore的`CMakeLists.txt`文件乍一看几千行，其实里面大多数都是IDL文件列表和C++文件列表。复杂度实际要比JavaScriptCore小一些。
 
-### JavaScript对象关系图
+编译WebCore的时候会在IDL生成这一步卡比较长的时间，因为IDL文件数量实在太多，而且都是用perl脚本做的转换。在IDL转换完成以后我们可以在编译目录里面找到每一个IDL文件对应的`.cpp`和`.h`文件。例如在`WebCore/dom`下我们可以找到`Document.idl`，转换后对应的两个文件是`JSDocument.h`和`JSDocument.cpp`。所有IDL绑定在生成以后都会被添加JS前缀。
 
-![image-20210521183809398](Compilation.assets/image-20210521183809398.png)
+
+
