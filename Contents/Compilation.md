@@ -83,16 +83,7 @@ struct a {
 
 ## Forwarding Headers
 
-不同的C/C++项目对于暴露在外的API头文件有不同的处理方式。在WebKit项目中重要分为两种：
-
-- WTF暴露根目录
-- 其他例如JSC，WebCore等组件使用Forwarding headers。
-
-WTF因为它本身是一个模板库，它内部的头文件比cpp代码还多。而且WTF是一大堆互相之间没有太多关系的零散功能放在一起，并不像JSC或者WebCore那样是一个具有完整功能的整体。再加上整个WTF代码规模非常的小，所以在这种特殊情况下上面提到的那些坏处就小很多，而暴露根目录会让使用变得更加便捷。
-
-从这里也可以看到规则并不是绝对的，很多时候都是权衡利弊下的折中选择。WebKit这个项目中充满了各种类似的折中，比如使用C++STL对象还是WTF对象，组件内部是保持严格的层级还是偶尔允许反向依赖的例外等等。
-
-相对于WTF来说JSC和WebCore就必须提供单独的头文件了。这部分头文件就叫做"Forwarding Headers"。它有下面几个特殊性：
+Forwarding Headers有下面几个特征：
 
 - 它总是在编译时期动态产生的。绝大多数头文件是从源代码目录中复制出来，少部分文件是使用某些辅助工具生成的。
 - 这些文件总是在编译目录中，作为编译**结果**的一部分。所谓“结果”是指：
@@ -240,8 +231,114 @@ public:
 
 对于依赖他的组件来说，如果使用了其他函数则会遇到链接错误。例如`visitChildren`，由于我们给编译器添加了默认`-fvisibility=hidden`，且`visitChildren`没有`JS_EXPORT_PRIVATE`声明，那么这个函数就不会出现在`JavaScriptCore.so`的导出列表中(确切的说是会被标记为Hidden)，那么其他库也就无法访问这个函数。
 
+## XCode和CMake
+
+WebKit是苹果主导的一个开源项目，所以它默认就是支持XCode编译的。在WebKit的根目录下面就可以找到XCode的工程文件`WebKit.xcworkspace`。同时WebKit也被用在很多开源项目上，而这时候是通过CMake来编译的。这两套编译体系共享了一部分脚本，但又在很多地方不一样。既然我们打算移植WebKit，那么很自然的我们会选择CMake，也就需要理清楚那些我们用不到的编译文件以防干扰。
+
+WebKit下的XCode配置其实是XCode这个IDE的工程文件。它是一堆XML文件用来记录IDE对项目的各种配置的，阅读性不是很好。优点是XCode是目前编译WebKit最容易的方法。如果拥有一台Mac，想尝试编译Mac上的WebKit的话，那么用XCode打开WebKit根目录下面的工程文件然后点击编译按钮就可以了。经过个把小时的编译，取决于电脑的性能，你就得到了一个叫做"MiniBrowser"的东西。这个MiniBrowser是WebKit的一个外壳，只有一些非常简单的浏览器功能，比如地址栏什么的。像Safari这样全功能的浏览器外壳苹果并没有开放源代码。
+
+XCode工程的编译过程中会有很多辅助步骤，比如生成Forwarding headers，或者生成IDL binding之类的。有些功能XCode并不能直接完成，所以XCode常常需要调用外部命令，这里面最常见的就是`make`。
+
+可能你会觉得奇怪，为什么不全部都用XCode或者全部都用make，我只能说XCode太弱了吧。
+
+还有一点就是XCode本质上是可以直接调用ruby，python，perl这些辅助工具的，但是XCode工程缺乏对外部工具之间依赖关系的表达能力，所以需要makefile。我们来看一眼`JavaScriptCore/DerivedSources.make`就知道了。
+
+我们打开这个文件，发现它目前有379行代码，里面调用了`perl`，`python`，`ruby`等等。之间还有复杂的依赖关系。把这些所有脚本放在一个makefile里面，然后从XCode执行这个makefile是比较合理的选择。
+
+这也就引申出一点：
+
+- `DerivedSources.make`这个文件是给XCode工程用的，而不是给CMake用的。
+
+这个常常引起不少困惑。比如我们看下面两段代码：
+
+`JavaScriptCore/CMakeList.txt`中：
+
+```cmake
+add_custom_command(
+    OUTPUT ${JavaScriptCore_DERIVED_SOURCES_DIR}/udis86_itab.c ${JavaScriptCore_DERIVED_SOURCES_DIR}/udis86_itab.h
+    DEPENDS ${UDIS_GEN_DEP}
+    WORKING_DIRECTORY ${JavaScriptCore_DERIVED_SOURCES_DIR}
+    COMMAND ${PYTHON_EXECUTABLE} ${JAVASCRIPTCORE_DIR}/disassembler/udis86/ud_itab.py ${JAVASCRIPTCORE_DIR}/disassembler/udis86/optable.xml ${JavaScriptCore_DERIVED_SOURCES_DIR}
+    VERBATIM)
+```
+
+`JavaScriptCore/DerivedSources.make`中：
+
+```makefile
+udis86_itab.h: $(JavaScriptCore)/disassembler/udis86/ud_itab.py $(JavaScriptCore)/disassembler/udis86/optable.xml
+	$(PYTHON) $(JavaScriptCore)/disassembler/udis86/ud_itab.py $(JavaScriptCore)/disassembler/udis86/optable.xml .
+```
+
+这两段代码做的是同样的事情，但一个是在CMake编译的时候使用，一个是给XCode调用。
+
+所以如果我们沿用CMake的话只需要关注各个目录下面的CMake脚本就可以了，因为大多数同级别的makefile都是给XCode对外调用的。
+
 ## WTF
+
+WTF的编译过程不复杂。在`WTF/wtf`目录下面可以找到他的`CMakeLists.txt`文件，里面主要就是编译所有cpp文件，然后复制Forwarding Headers.
+
+要注意的是WTF对`bmalloc`是有依赖的。我们移植的时候可以打开`USE_SYSTEM_MALLOC`宏，使用系统`malloc`来代替`bmalloc`，这样更方便些。
+
 ## JSC
+
+JSC的编译过程就相对来说复杂很多。这里可以对照着[JavaScriptCore移植](Contents/JSC.md)的“背景知识”章节阅读。
+
+打开`JavaScriptCore/CMakeLists.txt`能看到这个文件有一千多行。我们不可能把所有内容都过一遍，所以挑一些比较重要的来说：
+
+### `*.lut.h`的生成
+
+我们知道JavaScript的runtime中包含着很多内置对象，每个对象都有各种函数或者成员变量。这些内置对象其实本质上都是一个个的hash table。实际上所有JavaScript的object都是hash table，里面存的是key-value pair的成员。
+
+我们同时又知道这些内置的对象一般是不变的，那么对于这些“不变”的hash table最好的办法就是使用静态hash。
+
+在CMakeLists.txt中有这样一行：
+
+```cmake
+foreach (_file ${JavaScriptCore_OBJECT_LUT_SOURCES})
+    get_filename_component(_name ${_file} NAME_WE)
+    GENERATE_HASH_LUT(${CMAKE_CURRENT_SOURCE_DIR}/${_file} ${DERIVED_SOURCES_JAVASCRIPTCORE_DIR}/${_name}.lut.h)
+endforeach ()
+```
+
+它调用了同级别目录下面的`create_hash_table`脚本来生成这些`.lut.h`头文件。
+
+如果仔细观察的话会发现这些`.lut.h`大多数要么是`constructor`，要么是`prototype`。这其实是对应的JavaScript中的动态和静态成员函数。
+
+在JavaScript中我们知道每个可以new出来的对象都有一个`constructor`和一个`prototype`。`constructor`本质上是一个`Function`对象.我们可以对它使用`new`，所以它是一个构造函数。那么放在这个构造函数里面的成员就是*静态成员*。比如我们不仅可以：
+
+```javascript
+new Date();
+```
+
+还可以直接使用这个`constructor`的静态成员：
+
+```javascript
+Date.now();
+// 或者
+Date.parse('01 Jan 1970 00:00:00 GMT');
+```
+
+本质上`Date.now()`和其他类对象的函数是不在一个对象里的。比如
+
+```javascript
+new Date().getDate();
+```
+
+我们实际调用的是
+
+```javascript
+ Date.prototype.getDate();
+```
+
+所以对于每一个runtime对象来说，我们需要两个类来支持他们：
+
+- `prototype object` - 存放所有对象成员函数。
+- `constructor object` - 存放所有静态函数。
+
+也就是为什么我们能看到生成的lut文件里面有`DateConstructor.lut.h`和`DatePrototype.lut.h`
+
+附录里有一个我画的JavaScript对象关系图以帮助理解，这里涉及到的其他JavaScript细节就不展开了。
+
 ### LLInt
 #### LLLIntDesiredSettings.h
 #### LLIntDesiredOffsets.h
@@ -253,3 +350,9 @@ public:
 ## WebCore
 ### IDL Bindings
 ## WebKit & WebKitLegacy
+
+## 附录
+
+### JavaScript对象关系图
+
+![image-20210521183809398](Compilation.assets/image-20210521183809398.png)
