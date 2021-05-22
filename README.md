@@ -33,7 +33,7 @@
 
 介绍WebKit整个项目的组成结构，包括目录结构，编译组件的依赖关系等等。
 
-## [WebKit的编译过程](Contents/Compilation.md) [WIP]
+## [WebKit的编译过程](Contents/Compilation.md)
 
 WebKit每一个组件的编译过程都非常复杂。这部分会先大致梳理一遍整个项目的编译过程。具体每个组件的细节会在对应的章节详细介绍。
 
