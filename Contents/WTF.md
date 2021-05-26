@@ -89,3 +89,21 @@ list(APPEND WTF_SOURCES
 
 所以当我们需要知道一个功能有没有被打开，办法之一就是在`Platform.h`中查找对应的宏定义。在查找的时候记得把括号替换成下划线。
 
+## `config.h`
+
+WebKit的每一个组件都有一个`config.h`。例如：
+
+- `WTF/config.h`
+- `WebCore/config.h`
+- `JavaScriptCore/config.h`
+- `WebKit/config.h`
+- `WebDriver/config.h`
+
+等等。
+
+在代码里面几乎所有的`config.h`都是这样使用的：
+
+`#include "config.h"`
+
+所以在编译WebKit的过程中我们必须保证包含路径的优先级，使得当前组件的`config.h`被使用。一般来说WebKit的编译脚本因为使用Forwarding Headers不存在这个问题。但是如果我们移植的时候修改了编译脚本，或者使用了其他的编译工具来构建WebKit，那么这个问题会非常快的显现出来。
+
