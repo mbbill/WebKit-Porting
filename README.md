@@ -38,7 +38,7 @@
 WebKit每一个组件的编译过程都非常复杂。这部分会先大致梳理一遍整个项目的编译过程。具体每个组件的细节会在对应的章节详细介绍。
 
 
-## [WTF移植](Contents/WTF.md) [WIP]
+## [WTF移植](Contents/WTF.md)
 
 WTF是Web Template Framework的缩写。这个库原本是JavaScriptCore的一部分，后面独立出来变成一个公共库，为WebKit提供一些基础组件。
 
