@@ -429,11 +429,11 @@ WTF::RunLoop::run()
 
 - 最后一步，我们走到`WebCore::HTMLImageElement::decode()`，表明执行过程正式回到了WebCore内部。
 
-## IDL到C++的转换
+### IDL到C++的转换
 
 有了以上的背景知识，我们可以开始探究一下在WebCore的编译过程中这些事情是怎么被一步步完成的。首先我们依然拿`HTMLImageElement::decode()`做一个范例。其他的IDL基本上大同小异，可以以此类推。
 
-我们先找到`HTMLImageElement`的位置，它在`WebCore/html/HTMLImageElement.h/cpp`。在他们附近我们能找到一个文件名类似，仅仅扩展名不同的文件`HTMLImageElement.idl`。有了这两部分还不够，我们还需要继续找两个叫做`JSHTMLImageElement.h/cpp`的文件，他们一般都在WebKit的build目录的某个较深的子目录中，大家可以用搜索工具找一下。
+我们先找到`HTMLImageElement`的位置，它在`WebCore/html/HTMLImageElement.h(cpp)`。在他们附近我们能找到一个文件名类似，仅仅扩展名不同的文件`HTMLImageElement.idl`。有了这两部分还不够，我们还需要继续找两个叫做`JSHTMLImageElement.h/cpp`的文件，他们一般都在WebKit的build目录的某个较深的子目录中，大家可以用搜索工具找一下。
 
 找到了这三个部分以后可以对应到前面讨论过的调用过程，去寻找`decode()`函数在他们中的位置：
 
@@ -468,19 +468,229 @@ WTF::RunLoop::run()
     }
     ```
 
-在第一段中标注“注意这里”的地方我们能看到一个`impl`对象，它是由`this->wrapped()`得到的。
+在第一段中标注“注意这里”的地方我们能看到一个`impl`对象，它是由`this->wrapped()`得到的。这个`impl`对象就是`HTMLImageElement`。所以我们可以看到从IDL生成的`JSHTMLImageElement.cpp`代码完成了从JS跳转到WebCore的工作。
 
-toJS toWrapped.
+在WebCore中的`void HTMLImageElement::decode(Ref<DeferredPromise>&& promise)`函数的实现只有一行，间接调用了`m_imageLoader`的`decode`函数。我们知道`HTMLImageElement`是W3C标准的实现，所以合理的设计是把标准规定的内容放在这个文件里，而把和标准关系不大的内容抽象出来由其他类来实现。例如图像的加载和解码这些和平台关系比较大：图片下载可以是异步的，可以从缓存里面拿。图片可以软解码也可以硬解码等等。所以这里很多功能都被抽象到这个`m_imageLoader`对象去了，包括上面提到的下载，缓存，解码等等。
 
+### 四个问题
 
+回到我们上面提到的四个问题，这时候基本上已经有答案了：
 
-
+- 我们上面那段代码是在哪里运行的？
+  - 这段代码在进入`decode`都是在JavaScriptCore中执行，有可能运行在解释器模式，也可能在JIT模式。这取决于JSC的配置和当前状态。
+  - 在进入任何native代码之前，JavaScriptCore都会通过已经注册的全局`JSDOMWindow`对象来找到对应的入口，然后通过入口的IDL绑定生成代码，例如这里的`JSHTMLImageElement`跳转至WebCore调用对应的WebCore实现。
+  - 执行完毕以后运行结果会再由绑定代码生成JavaScriptCore返回对象，然后返回给调用者。运行再次回到JavaScriptCore中。
+- “下载图片“这个功能是在哪里实现的？
+  - 由`m_imageLoader`也就是`HTMLImageLoader`完成。
+- decode是在哪里做的？
+  - 同样由`HTMLImageLoader`完成。
+- 最关键的，`img`这个对象到底存储在哪里？
+  - `img`对象可以看成由两部分组成：
+    - JSC中的“壳”：负责JavaScript到native函数的调用，以及调用结果的返回。同时这个“壳”也负责对象的生命周期——由用户创建，并且由垃圾回收器回收。
+    - WebCore中的“蛋”：这是真正负责实现native函数的地方，例如上面的decode调用。从JSC到WebCore的跳转往往是由IDL生成的绑定来完成。
 
 #### Custom Bindings
 
+大部分IDL bindings是自动生成的，但是依然有一小部分需要手动编写，因为自动生成的代码并不能覆盖一些特别的场景。比如我们可以打开`DOMWindow.idl`，找到里面这样一行：
 
+```
+[Custom] any showModalDialog(DOMString url, optional any dialogArgs, optional DOMString featureArgs);
+```
 
+在最开始有一个`[Custom]`标记，表示这个函数是手动实现的。当IDL生成器看到这个标记的时候就会跳过，以避免和手写的部分冲突。手写的JS绑定都在`WebCore/bindings/js`目录中。打开以后可以看到很多JS开头的文件，如果你还记得我们前面提到过的一个惯例，JS开头的文件一般都是JSC对象绑定。在这里我们可以找到一个叫做`JSDOMWindowCustom.cpp`的文件，里面就定义了上面IDL中的`showModalDialog`。
 
+```c++
+JSValue JSDOMWindow::showModalDialog(ExecState& state)
+{
+    VM& vm = state.vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+
+    if (UNLIKELY(state.argumentCount() < 1))
+        return throwException(&state, scope, createNotEnoughArgumentsError(&state));
+
+    String urlString = convert<IDLNullable<IDLDOMString>>(state, state.argument(0));
+    RETURN_IF_EXCEPTION(scope, JSValue());
+    String dialogFeaturesString = convert<IDLNullable<IDLDOMString>>(state, state.argument(2));
+    RETURN_IF_EXCEPTION(scope, JSValue());
+
+    DialogHandler handler(state);
+
+    wrapped().showModalDialog(urlString, dialogFeaturesString, activeDOMWindow(state), firstDOMWindow(state), [&handler](DOMWindow& dialog) {
+        handler.dialogCreated(dialog);
+    });
+
+    return handler.returnValue();
+}
+```
+
+### IDL的转换过程
+
+第一步依然是先找到CMakeList.txt文件。在里面我们能找到几个巨大的IDL列表，他们都被一个叫做`GENERATE_BINDINGS`的宏调用。例如
+
+```
+GENERATE_BINDINGS(WebCoreBindings
+    OUTPUT_SOURCE WebCore_SOURCES
+    INPUT_FILES ${WebCore_IDL_FILES}
+    BASE_DIR ${WEBCORE_DIR}
+    IDL_INCLUDES ${WebCore_IDL_INCLUDES} ${DERIVED_SOURCES_WEBCORE_DIR}
+    FEATURES ${FEATURE_DEFINES_JAVASCRIPT}
+    DESTINATION ${DERIVED_SOURCES_WEBCORE_DIR}
+    GENERATOR JS
+    SUPPLEMENTAL_DEPFILE ${SUPPLEMENTAL_DEPENDENCY_FILE}
+    PP_EXTRA_OUTPUT
+        ${WINDOW_CONSTRUCTORS_FILE} ${WORKERGLOBALSCOPE_CONSTRUCTORS_FILE} ${DEDICATEDWORKERGLOBALSCOPE_CONSTRUCTORS_FILE}
+    PP_EXTRA_ARGS
+        --windowConstructorsFile ${WINDOW_CONSTRUCTORS_FILE}
+        --workerGlobalScopeConstructorsFile ${WORKERGLOBALSCOPE_CONSTRUCTORS_FILE}
+        --dedicatedWorkerGlobalScopeConstructorsFile ${DEDICATEDWORKERGLOBALSCOPE_CONSTRUCTORS_FILE}
+        --serviceWorkerGlobalScopeConstructorsFile ${SERVICEWORKERGLOBALSCOPE_CONSTRUCTORS_FILE}
+        --workletGlobalScopeConstructorsFile ${WORKLETGLOBALSCOPE_CONSTRUCTORS_FILE}
+        --paintWorkletGlobalScopeConstructorsFile ${PAINTWORKLETGLOBALSCOPE_CONSTRUCTORS_FILE})
+```
+
+这个`GENERATE_BINDINGS`宏定义在另一个叫做`WebCoreMacros.cmake`的地方。代码我就不贴了，里面注释也比较详细。在里面我们能发现最终调用的IDL生成器是`${WEBCORE_DIR}/bindings/scripts/generate-bindings-all.pl`。这个perl脚本就是最终完成转换的地方。所以在修改的过程当中如果生成IDL这一步出错，往往调试会比较麻烦，因为这个过程涉及了好几步的间接调用。在必要的时候我们可以手动运行这个perl脚本来调试它。
 
 
 ## 必要的功能模块以及第三方依赖库
+
+WebCore的很多功能都是通过`HAVE_xxx`和`USE_xxx`宏来控制的。我们可以关掉一些不必要的功能来减少依赖。比如我们如果关闭`MEDIA_SOURCE`来关闭MSE API，同时关闭`VIDEO`就可以取消对Gstreamer的依赖。关闭`ACCELERATED_2D_CANVAS`来取消2d canvas的GPU加速。关闭`WEB_AUDIO`可以取消音频。
+
+即便如此，并不是所有功能都可以这样关闭，毕竟WebCore需要一些最基本的第三方库支持才能做到一些最基础的功能，比如图片解码，网页渲染等等。下面的列表是一些必须的第三方库：
+
+- Cairo(pixman)：网页的向量渲染部分。[WebKit的图形与渲染](Contents/Graphics.md)章节会解释什么是向量渲染。
+- freetype：文字渲染。
+- libjpeg/libpng：图片渲染。
+- icu：国际化。
+- libxml2：XML支持。
+- OpenSSL：HTTPS支持。
+- sqlite：大多数本地存储需要它，例如localStorage等。
+- zlib：压缩页面支持。
+- GL/GLES库：由平台提供的GL库可以加速CSS渲染。
+
+#### 最小功能列表
+
+这个列表只是用来参考，因为这些宏定义会随着WebKit的版本更新而改变。这里面列出了很多可以关闭功能。在我们移植WebCore最初的时候可以最大限度的关闭不需要的东西来降低工作量。后续在有必要的时候可以慢慢添加。
+
+```c++
+#define ENABLE_3D_TRANSFORMS 1
+#define ENABLE_ACCELERATED_2D_CANVAS 0
+#define ENABLE_ACCELERATED_OVERFLOW_SCROLLING 0
+#define ENABLE_ACCESSIBILITY 0
+#define ENABLE_API_TESTS 0
+#define ENABLE_APPLICATION_MANIFEST 0
+#define ENABLE_ASYNC_SCROLLING 1
+#define ENABLE_ATTACHMENT_ELEMENT 0
+#define ENABLE_AVF_CAPTIONS 0
+#define ENABLE_BUBBLEWRAP_SANDBOX 0
+#define ENABLE_CACHE_PARTITIONING 0
+#define ENABLE_CHANNEL_MESSAGING 1
+#define ENABLE_CONTENT_EXTENSIONS 0
+#define ENABLE_CONTENT_FILTERING 0
+#define ENABLE_CONTEXT_MENUS 1
+#define ENABLE_CSS3_TEXT 0
+#define ENABLE_CSS_BOX_DECORATION_BREAK 1
+#define ENABLE_CSS_COMPOSITING 0
+#define ENABLE_CSS_CONIC_GRADIENTS 0
+#define ENABLE_CSS_DEVICE_ADAPTATION 0
+#define ENABLE_CSS_IMAGE_ORIENTATION 0
+#define ENABLE_CSS_IMAGE_RESOLUTION 0
+#define ENABLE_CSS_PAINTING_API 0
+#define ENABLE_CSS_SCROLL_SNAP 0
+#define ENABLE_CSS_SELECTORS_LEVEL4 1
+#define ENABLE_CSS_TRAILING_WORD 0
+#define ENABLE_CSS_TYPED_OM 0
+#define ENABLE_CURSOR_VISIBILITY 0
+#define ENABLE_CUSTOM_SCHEME_HANDLER 0
+#define ENABLE_DARK_MODE_CSS 0
+#define ENABLE_DASHBOARD_SUPPORT 0
+#define ENABLE_DATACUE_VALUE 0
+#define ENABLE_DATALIST_ELEMENT 0
+#define ENABLE_DATA_INTERACTION 0
+#define ENABLE_DEVICE_ORIENTATION 0
+#define ENABLE_DOWNLOAD_ATTRIBUTE 0
+#define ENABLE_DRAG_SUPPORT 0
+#define ENABLE_ENCRYPTED_MEDIA 1
+#define ENABLE_FETCH_API 1
+#define ENABLE_FILTERS_LEVEL_2 0
+#define ENABLE_FTPDIR 0
+#define ENABLE_FULLSCREEN_API 1
+#define ENABLE_GAMEPAD 0
+#define ENABLE_GEOLOCATION 1
+#define ENABLE_ICONDATABASE 0
+#define ENABLE_INDEXED_DATABASE 0
+#define ENABLE_INDEXED_DATABASE_IN_WORKERS 0
+#define ENABLE_INPUT_TYPE_COLOR 0
+#define ENABLE_INPUT_TYPE_DATE 0
+#define ENABLE_INPUT_TYPE_DATETIMELOCAL 0
+#define ENABLE_INPUT_TYPE_DATETIME_INCOMPLETE 0
+#define ENABLE_INPUT_TYPE_MONTH 0
+#define ENABLE_INPUT_TYPE_TIME 0
+#define ENABLE_INPUT_TYPE_WEEK 0
+#define ENABLE_INSPECTOR_ALTERNATE_DISPATCHERS 0
+#define ENABLE_INTERSECTION_OBSERVER 1
+#define ENABLE_INTL 1
+#define ENABLE_IOS_AIRPLAY 0
+#define ENABLE_KEYBOARD_KEY_ATTRIBUTE 1
+#define ENABLE_KEYBOARD_CODE_ATTRIBUTE 1
+#define ENABLE_LAYOUT_FORMATTING_CONTEXT 0
+#define ENABLE_LEGACY_CSS_VENDOR_PREFIXES 0
+#define ENABLE_LEGACY_CUSTOM_PROTOCOL_MANAGER 0
+#define ENABLE_LEGACY_ENCRYPTED_MEDIA 0
+#define ENABLE_LETTERPRESS 0
+#define ENABLE_MAC_LONG_PRESS 0
+#define ENABLE_MATHML 1
+#define ENABLE_MEDIA_CAPTURE 0
+#define ENABLE_MEDIA_CONTROLS_SCRIPT 1
+#define ENABLE_MEDIA_SOURCE 0
+#define ENABLE_MEDIA_STATISTICS 0
+#define ENABLE_MEDIA_STREAM 0
+#define ENABLE_MEMORY_SAMPLER 1
+#define ENABLE_METER_ELEMENT 1
+#define ENABLE_MHTML 0
+#define ENABLE_MOUSE_CURSOR_SCALE 0
+#define ENABLE_NAVIGATOR_CONTENT_UTILS 0
+#define ENABLE_NETSCAPE_PLUGIN_API 0
+#define ENABLE_NOTIFICATIONS 0
+#define ENABLE_ORIENTATION_EVENTS 0
+#define ENABLE_PDFKIT_PLUGIN 0
+#define ENABLE_POINTER_LOCK 0
+#define ENABLE_PUBLIC_SUFFIX_LIST 1
+#define ENABLE_QUOTA 0
+#define ENABLE_REMOTE_INSPECTOR 1
+#define ENABLE_RESOLUTION_MEDIA_QUERY 0
+#define ENABLE_RESOURCE_LOAD_STATISTICS 0
+#define ENABLE_RESOURCE_USAGE 1
+#define ENABLE_RUBBER_BANDING 0
+#define ENABLE_SERVICE_CONTROLS 0
+#define ENABLE_SERVICE_WORKER 0
+#define ENABLE_SMOOTH_SCROLLING 0
+#define ENABLE_SPEECH_SYNTHESIS 1
+#define ENABLE_SPELLCHECK 0
+#define ENABLE_STREAMS_API 1
+#define ENABLE_SVG_FONTS 1
+#define ENABLE_TELEPHONE_NUMBER_DETECTION 0
+#define ENABLE_TEXT_AUTOSIZING 0
+#define ENABLE_TOUCH_EVENTS 0
+#define ENABLE_TOUCH_SLIDER 0
+#define ENABLE_USERSELECT_ALL 0
+#define ENABLE_USER_MESSAGE_HANDLERS 0
+#define ENABLE_VARIATION_FONTS 0
+#define ENABLE_VIDEO 0
+#define ENABLE_VIDEO_PRESENTATION_MODE 0
+#define ENABLE_VIDEO_TRACK 0
+#define ENABLE_VIDEO_USES_ELEMENT_FULLSCREEN 1
+#define ENABLE_WEBASSEMBLY 0
+#define ENABLE_WEBASSEMBLY_STREAMING_API 0
+#define ENABLE_WEBDRIVER 0
+#define ENABLE_WEBGL 0
+#define ENABLE_WEBGL2 0
+#define ENABLE_WEBGPU 0
+#define ENABLE_WEBMETAL 0
+#define ENABLE_WEBVTT_REGIONS 0
+#define ENABLE_WEB_AUDIO 1
+#define ENABLE_WEB_AUTHN 0
+#define ENABLE_WEB_CRYPTO 0
+#define ENABLE_WEB_RTC 0
+#define ENABLE_XSLT 1
+```
+
