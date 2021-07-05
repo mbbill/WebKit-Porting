@@ -46,7 +46,7 @@ WTF是Web Template Framework的缩写。这个库原本是JavaScriptCore的一�
 
 JSC是JavaScriptCore的缩写。JSC是WebKit自带的JavaScript引擎。在早年Chrome仍然使用WebKit的时候曾有过两套JavaScript引擎的绑定，一个是JSC，另一个是V8。在Chrome独立出去以后JSC就成为WebKit默认且唯一的JavaScript引擎。
 
-## [WebCore移植](Contents/WebCore.md) [WIP]
+## [WebCore移植](Contents/WebCore.md)
 
 WebCore是WebKit的核心组件。它主要提供的功能是排版（Layout），渲染，多媒体，网络，W3C各种标准的实现，等等。虽然其中有些功能并不完全在WebCore中实现，例如网络和渲染有单独的进程负责，但是WebCore依然是处理绝大多数事情的中心。
 
