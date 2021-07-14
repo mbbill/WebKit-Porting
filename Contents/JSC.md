@@ -84,7 +84,7 @@ int main(int argc, char** argv)
 
 进入`jscmain`以后又是一堆初始化。注意前面初始化的是JSC的运行环境，例如WTF。这里的初始化的是对JSC内部对象。
 
-同样的方法，我们发现`jscmain`调用了`runJSC`，然后又进入`runInteractive`，最后也是最关键的，它调用了
+同样的方法，我们发现`jscmain`调用了`runJSC`，然后又进入`runInteractive`。最后也是最关键的，它调用了
 
 ```c++
 JSValue returnValue = evaluate(globalObject, jscSource(source, sourceOrigin), JSValue(), evaluationException);
@@ -109,7 +109,7 @@ JS_EXPORT_PRIVATE JSValue evaluate(ExecState*, const SourceCode&, JSValue thisVa
 
 返回一个JSValue的值。
 
-如果对JavaScript有一定了解，在看到这几个参数的时候可能会有一种似曾相识的感觉。从用户的角度来看，JavaScript引擎本质上是一个巨大的状态机，它有一个循环在不停的执行者各种回调函数。我们写的每一行代码都会直接或者间接的被某个回调函数调用。我们自己也可以直接注册这种全局的回调。所以JS引擎的状态在每一次循环执行完毕以后都会回到循环的起始点，这时候由于之前一次调用，JS引擎内部的状态已经改变了。例如我们可以新建一个对象挂在`window`这样的全局对象下面。如果我们把所有能够从根对象访问到的东西看成一棵树，那么这棵树就是`ExecState`。
+如果对JavaScript有一定了解，在看到这几个参数的时候可能会有一种似曾相识的感觉。从用户的角度来看，JavaScript引擎本质上是一个巨大的状态机，它有一个循环在不停的执行着各种回调函数。我们写的每一行代码都会直接或者间接的被某个回调函数调用。我们自己也可以直接注册这种全局的回调。所以JS引擎的状态在每一次循环执行完毕以后都会回到循环的起始点。这时候由于之前一次调用，JS引擎内部的状态已经改变了。例如我们可以新建一个对象挂在`window`这样的全局对象下面。如果我们把所有能够从根对象访问到的东西看成一棵树，那么这棵树就是`ExecState`。
 
 然后我们还需要提供一个`thisValue`。这就得怪JavaScript语言本身的设计了。熟悉JS的同学可能都曾经有过被这种奇怪的this支配的恐惧把。所以因为JS对this的特殊绑定方式，我们不能像C/C++或者其他静态语言一样把执行过程绑定在一个全局的栈上，而需要在每次运行的时候动态绑定不同的this。
 
@@ -145,7 +145,7 @@ JS_EXPORT_PRIVATE JSValue evaluate(ExecState*, const SourceCode&, JSValue thisVa
 
 ### 解释器 LLInt
 
-如果你读完上面的部分，你可能会觉得既然JSC的每一个Tier都可以单独执行，那么我如果能把JSC砍到只剩一个LLInt那不是应该很容易移植吗，因为大多数解释器都不涉及到需要动态申请可执行内存，也不会需要平台相关的汇编，可以看成一个C/C++实现的巨大的`switch-case`。事实上的确是这样的，不过也并不是这么简单，后面我们会详细探讨这个问题。
+如果你读完上面的部分，你可能会觉得既然JSC的每一个级别（Tier）都可以单独执行，那么我如果能把JSC砍到只剩一个LLInt那不是应该很容易移植吗，因为一般情况下解释器不涉及到动态申请可执行内存，也不会需要平台相关的汇编。它可以看成一个C/C++实现的巨大的`switch-case`。事实上的确是这样的，不过也并不是这么简单，后面我们会详细探讨这个问题。
 
 对嵌入式系统来说很多时候需要在限定的二进制尺寸下完成特定的功能。因为嵌入式设备有各方面的限制，不可能拥有像桌面电脑一样丰富的资源。从这一点来看LLInt似乎非常的合适——它能砍掉非常多的代码，几乎所有JIT相关的都不再需要。它可以节省很多动态内存，因为JIT是吃内存大户。同时它在功能上和高级别的Tier——DFG、FTL JIT几乎没有差别。“**几乎**” 是指像WASM这样必须依赖JIT的功能目前还没办法在JSC中解释执行，但是其他所有我们能想到的JavaScript功能它都是支持。
 
@@ -188,7 +188,7 @@ OFFLINE_ASM_OPCODE_LABEL(op_enter)
 
 #### Bytecode
 
-上面提到过JSC并不直接解释JavaScript，而是先通过parser把JavaScript转换成AST，然后再用Bytecompiler把AST变成bytecode。这些部分并不是LLInt的一部分，因为他们只是执行直接的解析和转换。
+上面提到过JSC并不直接解释JavaScript，而是先通过parser把JavaScript转换成AST，然后再用Bytecompiler把AST变成bytecode。这些部分并不是LLInt的一部分，因为他们只是执行之前的解析和转换步骤。
 
 我们可以在JavaScriptCore目录下可以找到`parser`和`bytecode`目录分别对应上述功能。现在我们来看一下bytecode到底是什么样子。
 
@@ -198,11 +198,20 @@ OFFLINE_ASM_OPCODE_LABEL(op_enter)
 OFFLINE_ASM_OPCODE_LABEL(op_enter)
 ```
 
-这其实是一个宏，它的展开也很简单——变成一个label。你们可以在`LowLevelInterpreter.cpp`里找到这段宏的定义。
+这其实是一个宏，它的展开也很简单——它会变成一个label。你们可以在`LowLevelInterpreter.cpp`里找到这段宏的定义。
+
+```c++
+#define DISPATCH_OPCODE() goto dispatchOpcode
+
+#define DEFINE_OPCODE(__opcode) \
+        case __opcode: \
+        __opcode: \
+            RECORD_OPCODE_STATS(__opcode);
+```
 
 看到这个label是不是忽然想到了什么？解释器大循环和`switch-case`？没错！所有的bytecode最终都会变成这样的汇编，然后被塞到那个超大的`switch-case`循环里面去。
 
-我们再来看这一行，里面还有一个`op_enter`，看起来像字节码。它就是JSC的Opcode(或者bytecode)。不过这里的汇编代码都是生成出来的，你如果在gdb里面追踪这个代码的路径会发现这是个头文件，叫做`LLIntAssembly.h`，并且是在编译生成的某个目录下面，并不是在源代码目录下面。它的生成过程有点复杂，一步步来讲。
+我们再来看这一行，里面还有一个`op_enter`，看起来像字节码。它就是JSC的Opcode(或者bytecode)。不过这里的汇编代码都是生成出来的。你如果在gdb里面追踪这个代码的路径会发现这是个头文件，叫做`LLIntAssembly.h`。并且它是在编译生成的某个目录下面，而不是在源代码目录下面。它的生成过程有点复杂，我们一步步来看。
 
 首先我们到`bytecode`目录下面找一个叫做`BytecodeList.rb`的文件。打开后发现这个文件中罗列了非常多的opcode**声明**。例如：
 
@@ -326,9 +335,9 @@ loadq -(FirstConstantRegisterIndexNarrow * 8)[value, index, 8], value
 
 #### 汇编当中的偏移量
 
- 如果我们回想一下最初的目标，移植JSC，那么我们现在到了哪一步呢？似乎越走越远，而且越来越复杂。即使我们砍掉了JIT只留下解释器，我们依然碰到了复杂的汇编以及各种平台相关的问题。
+ 如果我们回想一下最初的目标——移植JSC，那么我们现在到了哪一步呢？似乎越走越远，而且越来越复杂。即使我们砍掉了JIT只留下解释器，我们依然碰到了复杂的汇编以及各种平台相关的问题。
 
-如果我们移植一个只有C代码的项目，可能会比较轻松。如果当中嵌着一些汇编，事情会变得麻烦一些。如果这些汇编又是动态生成的，并且通过各种复杂脚本经过很多奇怪的步骤最终得到一个看起来不知道在干什么的东西，这时候如果遇到问题的话调试会变得极其棘手。因为定位错误会变得非常困难。我们拿上面那一段生成的汇编举个例子：
+如果我们移植的是一个只有C代码的普通项目，可能会比较轻松。如果当中嵌着一些汇编，事情会变得稍微麻烦一些。如果这些汇编又是动态生成的，并且通过各种复杂脚本经过很多奇怪的步骤最终得到一个看起来不知道在干什么的东西，这时候如果遇到问题的话调试会变得极其棘手。因为定位错误会变得非常困难。我们拿上面那一段生成的汇编举个例子：
 
 考虑这一行，
 
@@ -387,7 +396,7 @@ struct B b;
 
 可能你已经想到了，如果需要一个非常可靠的方法来提取偏移量，唯一可行的办法就是在最终生成的二进制文件中输出这个偏移。比如上面我们的`struct A`和`struct B`的例子里面，我们可以在别的地方直接把他们内部成员的地址打印出来。但是在这里我们需要的是一个内联汇编，它本身就是用来编译我们最终需要的二进制的一部分，所以这就变成鸡和蛋的问题了——我们需要一个二进制文件来输出偏移量，同时我们需要这个偏移量来编译这个二进制。
 
-这里其实还有一个问题。假设我们现在用的是交叉编译器，比如从X86_64架构的Linux上面交叉编译树莓派上的armv7a版本。这时候我们是没办法直接在Linux host上面运行目标程序的，也就是说“输出偏移”这一步我们需要换一个方法，而不能直接依靠目标平台的可执行文件来给我们打印。毕竟在编译过程中出现这种需要在目标平台执行程序的步骤就太过麻烦了。更何况有些目标平台未必可以做到控制台输出，或者出现硬件还没做好等等情况。
+这里其实还有一个问题。假设我们现在用的是交叉编译器，比如从X86_64架构的Linux上面交叉编译树莓派上的armv7a版本。这时候我们是没办法直接在Linux host上面运行目标程序的，也就是说“输出偏移”这一步我们需要换一个方法，而不能直接依靠目标平台的可执行文件来给我们打印。毕竟在编译过程中出现这种需要在目标平台执行程序的步骤就太过麻烦了。更何况有些目标平台未必可以做到控制台输出，甚至目标平台硬件都还不存在。
 
 #### LLIntOffsetExtractor
 
@@ -433,7 +442,7 @@ OFFLINE_ASM_LOCAL_LABEL(_offlineasm_llintOpWithReturn__llintOp__commonOp__fn__fn
 
 看出来了吗？
 
-在CLoop的代码中，`t0`,`t1`,`cfr`这些局部变量对应的是汇编中的寄存器。也就是说CLoop用C/C++语言的功能比如局部变量，整数运算，移位，强制转换这些来模拟了汇编代码的行为。
+在CLoop的代码中，`t0`,`t1`,`cfr`这些局部变量对应的是汇编中的寄存器。也就是说CLoop用C/C++语言的功能比如局部变量，整数运算，移位，强制转换这些操作来模拟了汇编代码的行为。
 
 如果我们打开`llint/LowLevelInterpreter.cpp`会发现下面这段代码：
 
@@ -467,13 +476,13 @@ public:
 t1 = *CAST<intptr_t*>((t1.i8p() + 184)); // LowLevelInterpreter64.asm:439
 ```
 
-也就是说这一段生成的CLoop“汇编”虽然是C语言模拟的，它依然**不能跨平台**，因为很显然换个地方就不是这184了。如果我们能把这行代码变成下面这样才是完美的：
+也就是说这一段生成的CLoop“汇编”虽然是C语言模拟的，它依然**不能跨平台**，因为换个不同的硬件这里很可能就不是这184了。如果我们能把这行代码变成下面这样才是完美跨平台的：
 
 ```c++
 t1 = *CAST<intptr_t*>((t1.i8p() + (OFFSETOF_PRIVATE(CodeBlock, m_constantRegisters) + OFFSETOF_PRIVATE(Vector, m_buffer))));
 ```
 
-假如我们有一个宏，叫做`OFFSETOF_PRIVATE`，它的功能和`offsetof`类似，且能用在`private`成员上。那么我们得到的这一段新的代码才是真正跨平台的，而且我们甚至都不再需要上面所有`offlineasm`的那些繁琐步骤了。
+这里假设我们有一个宏，叫做`OFFSETOF_PRIVATE`，它的功能和`offsetof`类似，且能用在`private`成员上。那么我们得到的这一段新的代码才是真正跨平台的，而且我们甚至都不再需要上面所有`offlineasm`的那些繁琐步骤了。
 
 具体怎样实现可以参考附录[打造一个可移植的JS引擎](../Appendix/PortableJSEngine.md)
 
@@ -484,7 +493,7 @@ JSC中的JIT(Just In Time compiler)在近十年经历过非常大的改进。目
 - DFG(Data Flow Graph)，中等性能，低延迟。
 - FTL(Faster Than Light)，高性能，高延迟。
 
-FTL在2014年之前使用的是LLVM后端，14年以后改为了B3(Bare Bones Backend)。后又陆续加入了很多其他的优化以及wasm支持。
+FTL在2014年之前使用的是LLVM后端，14年以后改为了B3(Bare Bones Backend)。后又陆续加入了很多其他的优化以及WASM支持。
 
 因为这些JIT最终都会在运行的时候实时编译可执行代码，所以这样也会带来一些限制：
 
@@ -500,7 +509,7 @@ FTL在2014年之前使用的是LLVM后端，14年以后改为了B3(Bare Bones Ba
 
 ### Runtime
 
-众所周知JavaScript是一个需要runtime的语言。这个runtime提供了很多JavaScript语言的规定的，却无法用JavaScript本身实现的功能。比如获取系统时间，垃圾收集，异常处理等等。在JSC中Runtime的大多数功能都在`runtime`这个目录下实现了。
+众所周知JavaScript是一个需要runtime的语言。这个runtime提供了很多JavaScript语言的规定了，但是却无法用JavaScript本身实现的功能。比如获取系统时间，垃圾收集，异常处理等等。在JSC中Runtime的大多数功能都在`runtime`这个目录下实现了。
 
 例如在JavaScript global namespace下面能访问到的大多数对象都在`runtime`目录下以`JS`开头的文件中定义。例如
 
@@ -545,7 +554,7 @@ Date.now();
 Date.parse('01 Jan 1970 00:00:00 GMT');
 ```
 
-本质上`Date.now()`和其他类对象的函数是不在一个对象里的。比如
+这些诸如`Date.now()`的静态成员和其他*成员函数*并不在同一个地方。比如
 
 ```javascript
 new Date().getDate();
@@ -557,7 +566,7 @@ new Date().getDate();
 Date.prototype.getDate();
 ```
 
-所以对于每一个runtime对象来说，我们需要两个类来支持他们：
+所以对于每一个runtime中的对象来说，我们需要两个对象来支持他们：
 
 - `prototype object` - 存放所有对象成员函数。
 - `constructor object` - 存放所有静态函数。
@@ -568,7 +577,7 @@ Date.prototype.getDate();
 
 #### JIT Profiler & Sampling Profiler
 
-`Profiler`是JSC的JIT需要的一个比较关键的功能。我们知道JIT的内存开销是比较大的，同时JIT的编译过程，尤其是FTL JIT编译是比较慢的。而热点代码往往只占所有代码的一小部分。如果可以知道那些代码比较“热”，那么编译这些热点很显然会事半功倍。注意这里的Profiler是用来优化JIT的，而不是另一个给inspector用的`sampling profiler`。
+`Profiler`是JSC的JIT需要的一个比较关键的功能。我们知道JIT的内存开销是比较大的。同时JIT的编译过程，尤其是FTL JIT编译是比较慢的。而热点代码往往只占所有代码的一小部分。如果可以知道哪些代码比较“热”，那么编译这些热点很显然会事半功倍。注意这里的Profiler是用来优化JIT的，而不是另一个给inspector用的`sampling profiler`。
 
 关于`sampling profiler`可以参考 https://webkit.org/blog/6539/introducing-jscs-new-sampling-profiler/
 
@@ -612,7 +621,7 @@ JSC提供很多宏开关可以让我们比较方便的做到这一点：
 - `ENABLE_C_LOOP=1`
 - `ENABLE_ASSEMBLER=0`
 
-注意即使我们关闭了所有的JIT，LLInt依然对assembler是有依赖的，除非使用CLoop。而assembler目前只支持上一个章节中列举的5种CPU架构，所以如果想要移植JSC到一个不在列表中的CPU上，LLInt+CLoop是唯一的选择。
+注意即使我们关闭了所有的JIT，LLInt依然对assembler是有依赖的，除非使用的是CLoop后端。而assembler目前只支持上一个章节中列举的5种CPU架构，所以如果想要移植JSC到一个不在列表中的CPU上，LLInt+CLoop是唯一的选择。
 
 ### CPU相关
 

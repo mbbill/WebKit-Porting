@@ -1,16 +1,18 @@
 # WebCore移植
 
-相对于JavaScriptCore来说WebCore的代码量大了很多倍，但是整体编译过程的复杂度却稍好一些，因为没有JSC那么多涉及到汇编和各种伪代码转换的复杂步骤。编译过程中最复杂的一个步骤基本上就是IDL生成C++绑定的过程了。我们还像之前一样先了解一些背景知识。
+相对于JavaScriptCore来说WebCore的代码量大了很多倍，但是整体编译过程的复杂度却稍好一些，因为没有JSC那么多涉及到汇编和各种伪代码转换的复杂步骤。编译过程中最复杂的一个步骤基本上就是IDL生成C++绑定代码的过程了。我们还像之前一样先了解一些背景知识。
 
 ## 背景知识
 
 ### Forwarding headers
 
-如果还没有看过[WebKit的编译过程](Contents/Compilation.md)的话，我建议先读一下这个章节，尤其是里面关于forwarding header的部分。
+如果还没有看过[WebKit的编译过程](Contents/Compilation.md)的话，我建议先读一下这个章节，尤其是里面关于forwarding headers的部分。
 
-因为WebCore依赖JavaScriptCore，而WebCore本身又会被上层组件使用，所以WebCore既依赖JSC提供的forwarding headers，又需要对WebKit和WebKitLegacy提供自己的forwarding header。
+因为WebCore依赖JavaScriptCore，而WebCore本身又会被上层组件使用，所以WebCore既依赖JSC提供的forwarding headers，又需要对WebKit和WebKitLegacy提供自己的forwarding headers。
 
-WebKit 的Forwarding headers是通过`generate-forwarding-headers.pl`生成的。在之前的文章中我们提到过Forwarding headers常常是被复制到一个目录中去的，所以在WebCore和其他依赖WebCore的组件中使用这个头文件的方法是不同的。例如`WebCore/dom/Document.h`文件在WebCore中使用的时候始终是：
+WebKit 的Forwarding headers是通过`generate-forwarding-headers.pl`生成的。在之前的文章中我们提到过Forwarding headers常常是被复制到一个目录中去的，所以同一个头文件在WebCore中与在其他组件中使用的方法是不同的。
+
+例如`WebCore/dom/Document.h`文件在WebCore中使用的时候始终是：
 
 ```c++
 #include "Document.h"
@@ -22,13 +24,13 @@ WebKit 的Forwarding headers是通过`generate-forwarding-headers.pl`生成的�
 #include <WebCore/Document.h>
 ```
 
-所以我们能看到一个特征：如果我们需要在WebCore以外使用一个WebCore的头文件，那么它出现的格式一定是如上所示的。所以我们可以根据这个特征来生成所有需要的Forwarding headers。而`generate-forwarding-headers.pl`就是这么做的。这个Perl脚本会遍历所有用到WebCore头文件的地方，然后再找到对应的目录，例如上面的`Document.h`出现在`WebCore/dom`下面，那么最终这个`Document.h`会被复制到`/building_dir/<some other folders>/ForwardingHeaders/WebCore/Document.h`。由于`ForwardingHeaders`是其他依赖WebCore项目的头文件路径之一，那么使用`#include <WebCore/Document.h>`就会顺理成章的找到这里。
+所以我们能看到一个特征：如果我们需要在WebCore以外使用一个WebCore的头文件，那么它出现的格式一定是如上所示的。所以我们可以根据这个特征来生成所有需要的Forwarding headers。而`generate-forwarding-headers.pl`就是这么做的。这个Perl脚本会遍历所有用到WebCore头文件的地方，然后再找到对应的目录，例如上面的`Document.h`出现在`WebCore/dom`下面，那么最终这个`Document.h`会被复制到`/building_dir/<some folders>/ForwardingHeaders/WebCore/Document.h`。由于`ForwardingHeaders`是其他依赖WebCore项目的头文件路径之一，那么使用`#include <WebCore/Document.h>`就会顺理成章的找到这里。
 
 ### 线程模型
 
 虽然线程模型和对象关系与WebCore的移植没有直接联系，但是他们对于理解WebCore非常的重要。
 
-WebCore从最初的设计开始基本上一直沿用的是一个单线程的设计，也就是说绝大多数涉及到HTML和JS的事情都在一个线程里面完成。比如页面的下载，解析，生成dom树，渲染树，执行页面中内嵌的JS等等。在这么多年的改进中WebCore的部分功能被挪到了一些其他的辅助线程里面去，包括渲染合成器TextureMapper，页面下载等等，但是主要的框架依然没有太大的变化。一部分原因是初始设计加上很多年的功能添加使得大型重构变得困难，另一方面是因为标准的规定。例如JS需要在dom线程中执行就是标准规定的。想要跳过这个限制首先需要从标准入手，例如web worker。
+WebCore从最初的设计开始基本上一直沿用的是一个单线程的设计，也就是说绝大多数涉及到HTML和JS的事情都在一个线程里面完成。比如页面的下载，解析，生成dom树，渲染树，以及执行页面中内嵌的JS等等。在这么多年的改进中WebCore的部分功能被挪到了一些其他的辅助线程里面去，包括渲染合成器TextureMapper，页面下载等等，但是主要的框架依然没有太大的变化。一部分原因是初始设计加上很多年的功能添加使得大型重构变得困难，另一方面是因为标准在这方面的规定。例如JS需要在dom线程中执行就是标准规定的。想要跳过这个限制首先需要从标准入手，例如web worker。
 
 所以我们大致可以把WebCore理解成一个单线程的大循环，循环的起点是`WTF::RunLoop::run()`，然后在每一次循环中：
 
@@ -63,13 +65,13 @@ function addElement () {
 }
 ```
 
-这时候WebCore一般是*不会*做同步Layout的，因为我们只是在代码里创建了这个对象，而至于这个对象什么时候被渲染，然后被用户看见等等，并不会对我们的代码产生任何影响。但是如果我们加这一行：
+这时候WebCore一般是*不会*做同步Layout的，因为我们只是在代码里创建了这个对象，而至于这个对象什么时候被渲染，什么时候可以被用户看见等等并不会对我们的代码产生任何影响。但是如果我们加这一行：
 
 ```javascript
 console.log(newDiv.clientHeight);
 ```
 
-这时候Layout就是必须的，因为只有重新排版以后我们才能知道这个`newDiv`有多高。在执行这一行JavaScript之前“脏”页面会被强制重排版。
+这时候Layout就是必须的，因为只有重新排版以后我们才能知道这个`newDiv`的尺寸。在执行这一行JavaScript之前“脏”页面会被强制重排版。所谓“脏”页面就是指部分内容被修改了但是还没有来得及重新排版的页面。
 
 所以这里我们可以总结这么几点：
 
@@ -162,7 +164,7 @@ img.decode();
 let date = new Date();
 ```
 
-与上面的`document`不同，这里`Date`是一个JavaScript runtime组件，任何一个满足标准的JavaScript引擎都会有这样的一个库，例如JSC，或者V8。所以当我们即使在Node.js控制台里面输入这一行代码的时候它依旧是可以运行的，因为它是JavaScript的一部分。但我们上面第一行代码中的`document`不是。感兴趣的可以去Node.js下面试试看，它会告诉你`window`和`document`都是`undefined`。
+与上面的`document`不同，这里`Date`是一个JavaScript runtime组件。任何一个满足标准的JavaScript引擎都会有这样的一个库，例如JSC，或者V8。所以当我们即使在Node.js控制台里面输入这一行代码的时候它依旧是可以运行的，因为它是JavaScript的一部分。但我们上面第一行代码中的`document`不是。感兴趣的可以去Node.js下面试试看，它会告诉你`window`和`document`都是`undefined`。
 
 回到我们在inspector里面敲的三行代码，实际上这个`document`并不是一个根对象，而是挂在`window object`下面。这个`window`对象就是我们经常说的`global scope`。当我们在浏览器中运行JavaScript的时候，浏览器会在初始化JavaScript引擎以后向其中注入所有浏览器的绑定对象，例如`window`，同时在运行JavaScript的时候会将当前scope设置成`window`。
 
@@ -487,7 +489,7 @@ WTF::RunLoop::run()
 - 最关键的，`img`这个对象到底存储在哪里？
   - `img`对象可以看成由两部分组成：
     - JSC中的“壳”：负责JavaScript到native函数的调用，以及调用结果的返回。同时这个“壳”也负责对象的生命周期——由用户创建，并且由垃圾回收器回收。
-    - WebCore中的“蛋”：这是真正负责实现native函数的地方，例如上面的decode调用。从JSC到WebCore的跳转往往是由IDL生成的绑定来完成。
+    - WebCore中的“芯”：这是真正负责实现native函数的地方，例如上面的decode调用。从JSC到WebCore的跳转往往是由IDL生成的绑定来完成。
 
 #### Custom Bindings
 

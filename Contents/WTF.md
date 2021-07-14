@@ -20,7 +20,7 @@ WebKit对平台相关代码的管理可以说是有点混乱的。拿`wtf/`来�
 
 等等。
 
-`PLATFORM`宏就稍微有点混乱了。它一般指内核之上的东西，也就是用户态的支持库。例如
+`PLATFORM`宏就稍微有点混乱了。它一般指内核之外的东西，也就是用户态的支持库。例如
 
 - `PLATFORM(GTK)`
 - `PLATFORM(MAC)`
@@ -36,7 +36,7 @@ WebKit对平台相关代码的管理可以说是有点混乱的。拿`wtf/`来�
 
 ## `PlatformXXX.cmake`
 
-我们能在`wtf/`目录下面找到不少`cmake`文件，例如`PlatformWPE.cmake`。打开以后会看到这个cmake文件里主要就是列举了所有WPE平台的头文件和代码。按照这个列表我们可以很方便的知道哪些代码被编译，哪些被忽略。例如：
+我们能在`wtf/`目录下面找到不少`cmake`文件，例如`PlatformWPE.cmake`。打开以后会看到这个`cmake`文件里主要就是列举了所有WPE平台的头文件和代码。按照这个列表我们可以很方便的知道哪些代码被编译，哪些被忽略。例如：
 
 ```cmake
 list(APPEND WTF_SOURCES
@@ -67,7 +67,7 @@ list(APPEND WTF_SOURCES
 )
 ```
 
-可见它不仅用了部分posix和unix的代码，还用了glib。所以我们知道虽然WPE号称是给嵌入式用的移植，它依然是有不少依赖的。这个glib就是GTK的支持库（注意这不是glibc）。
+可见它不仅用了部分posix和unix的代码，还用了glib。所以我们知道虽然WPE号称是给嵌入式用的移植，它依然是有不少依赖的。这个glib就是从GTK当中拆分出来的一个系统功能支持库（注意这不是glibc）。
 
 ## `Platform.h`
 
